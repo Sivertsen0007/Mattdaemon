@@ -28,6 +28,18 @@
   .tb-btn:hover{background:#202023;color:var(--ink)}
   .sb-reconnect{width:100%}
 
+  /* ---- right-click context menu (session rows) ---- */
+  .ctx{position:fixed;z-index:50;min-width:158px;background:#161617;border:1px solid var(--border);
+    border-radius:8px;padding:4px;box-shadow:0 10px 30px rgba(0,0,0,.55);display:none;
+    font-family:'JetBrains Mono',monospace}
+  .ctx.open{display:block}
+  .ctx button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:transparent;
+    border:0;color:var(--inkMute);font-size:12px;padding:8px 10px;border-radius:5px;cursor:pointer;font-family:inherit}
+  .ctx button:hover{background:#202023;color:var(--ink)}
+  .ctx button.danger:hover{background:#2a1618;color:var(--red)}
+  .ctx .sep{height:1px;background:var(--border);margin:4px 2px}
+  .ctx .k{width:14px;text-align:center;opacity:.8}
+
   /* ---- body: sidebar + terminal ---- */
   .body{flex:1;display:flex;min-height:0}
 
@@ -107,6 +119,13 @@
       </div>
     </div>
   </div>
+</div>
+
+<!-- right-click menu for session rows -->
+<div class="ctx" id="ctxMenu">
+  <button id="ctxRename"><span class="k">&#9998;</span> Rename</button>
+  <div class="sep"></div>
+  <button id="ctxClose" class="danger"><span class="k">&#10005;</span> Close session</button>
 </div>
 
 <script>
@@ -326,6 +345,11 @@
         ev.stopPropagation();
         startRename(nm, s);
       });
+      // right-click anywhere on the row for the rename / close menu
+      row.addEventListener('contextmenu', ev => {
+        ev.preventDefault();
+        openCtx(ev.clientX, ev.clientY, nm, s);
+      });
 
       sessListEl.appendChild(row);
     }
@@ -367,6 +391,40 @@
     });
     nm.addEventListener('blur', () => finish(true), { once: true });
   }
+
+  // ── right-click context menu ─────────────────────────────────────────────
+  const ctxMenu = document.getElementById('ctxMenu');
+  let ctxTarget = null;   // { nm, s } of the row the menu was opened on
+
+  function openCtx(x, y, nm, s) {
+    ctxTarget = { nm, s };
+    ctxMenu.style.left = x + 'px';
+    ctxMenu.style.top = y + 'px';
+    ctxMenu.classList.add('open');
+    // nudge back inside the viewport if it would overflow the edges
+    const r = ctxMenu.getBoundingClientRect();
+    if (r.right > window.innerWidth)  ctxMenu.style.left = Math.max(4, x - r.width) + 'px';
+    if (r.bottom > window.innerHeight) ctxMenu.style.top = Math.max(4, y - r.height) + 'px';
+  }
+  function closeCtx() { ctxMenu.classList.remove('open'); ctxTarget = null; }
+
+  document.getElementById('ctxRename').addEventListener('click', () => {
+    const t = ctxTarget; closeCtx();
+    if (t) startRename(t.nm, t.s);
+  });
+  document.getElementById('ctxClose').addEventListener('click', () => {
+    const t = ctxTarget; closeCtx();
+    if (!t) return;
+    fetch('/api/terminal/stop', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid: t.s.id })
+    }).then(() => refreshSessions()).catch(() => {});
+  });
+  // dismiss on any click elsewhere, Escape, scroll or resize
+  window.addEventListener('click', closeCtx);
+  window.addEventListener('resize', closeCtx);
+  window.addEventListener('blur', closeCtx);
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape') closeCtx(); });
 
   // ── polling: sessions + states ───────────────────────────────────────────
   async function refreshSessions() {

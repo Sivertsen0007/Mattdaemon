@@ -6,6 +6,8 @@
 	<string>ML Suite Terminal</string>
 	<key>CFBundleExecutable</key>
 	<string>MLSuiteTerminal</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.mathiassivertsen.mlsuiteterminal</string>
 	<key>CFBundleName</key>

@@ -16,9 +16,10 @@ echo "==> Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-# 1. Native binary + Info.plist
+# 1. Native binary + Info.plist + app icon
 cp "$BIN_PATH/MLSuiteTerminal" "$APP/Contents/MacOS/MLSuiteTerminal"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # 2. Python engine (lives one level up in mac-terminal/). Copied into the
 #    bundle's Resources so the app carries its own server.
