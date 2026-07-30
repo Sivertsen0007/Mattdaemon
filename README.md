@@ -1,4 +1,4 @@
-# MLSuite Terminal - the VPS web terminal as a local Mac app
+# Mattdaemon - the VPS web terminal as a local Mac app
 
 This is a small, self-contained wrapper that runs the AI-Hub web terminal
 locally on a Mac. It is the same tmux-backed terminal you use in the VPS
@@ -20,10 +20,10 @@ loopback HTTP server), `terminal_manager.py` (the tmux session logic), and the
 
 ```sh
 cd macapp && ./build.sh
-open build/MLSuiteTerminal.app
+open build/Mattdaemon.app
 ```
 
-`build.sh` runs `swift build`, assembles `MLSuiteTerminal.app`, bundles the
+`build.sh` runs `swift build`, assembles `Mattdaemon.app`, bundles the
 Python engine and `static/` into it, and ad-hoc codesigns it so Gatekeeper lets
 it launch. The result is fully self-contained - you can move the `.app`
 anywhere and double-click it.

@@ -22,7 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         homeDir = loadOrCreateHome()
 
         guard let serverScript = Bundle.main.path(forResource: "server", ofType: "py") else {
-            fatalStart("Bundled server.py is missing from the app - reinstall ML Suite Terminal.")
+            fatalStart("Bundled server.py is missing from the app - reinstall Mattdaemon.")
             return
         }
 
@@ -212,7 +212,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false)
-        window.title = "ML Suite Terminal"
+        window.title = "Mattdaemon"
         window.contentView = webView
         window.center()
         // Remember size/position across launches.
@@ -231,7 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Shows a blocking alert for an unrecoverable start-up problem and quits.
     private func fatalStart(_ message: String) {
         let alert = NSAlert()
-        alert.messageText = "ML Suite Terminal could not start"
+        alert.messageText = "Mattdaemon could not start"
         alert.informativeText = message
         alert.alertStyle = .critical
         alert.addButton(withTitle: "Quit")

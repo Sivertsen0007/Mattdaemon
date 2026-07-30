@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Build MLSuiteTerminal.app from SPM output and bundle the Python engine so the
+# Build Mattdaemon.app from SPM output and bundle the Python engine so the
 # .app is fully self-contained (double-click, no external files needed).
+# (The executable inside stays MLSuiteTerminal - the SPM product name.)
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -10,7 +11,7 @@ echo "==> swift build -c $CONFIG"
 swift build -c "$CONFIG"
 
 BIN_PATH="$(swift build -c "$CONFIG" --show-bin-path)"
-APP="build/MLSuiteTerminal.app"
+APP="build/Mattdaemon.app"
 
 echo "==> Assembling $APP"
 rm -rf "$APP"

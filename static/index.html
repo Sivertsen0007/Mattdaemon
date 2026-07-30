@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ML Suite Terminal</title>
+<title>Mattdaemon</title>
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <script src="/static/vendor/xterm.js"></script>
 <script src="/static/vendor/addon-fit.js"></script>
@@ -15,6 +15,11 @@
     --ink:#f2f2f3; --inkMute:#8a8a90; --inkDim:#5a5a60;
     --accent:#f2f2f3;                 /* mono accent = white */
     --green:#3ec97a; --red:#ff5f57; --yellow:#febc2e; --grn:#28c840;
+    /* session status (matches the :3333 dashboard termStatusColor) */
+    --stIdle:#22c55e;      /* green  - done, waiting for you */
+    --stWorking:#eab308;   /* yellow - working / looping */
+    --stAttention:#ef4444; /* red    - needs your attention */
+    --stOffline:#8a8a90;   /* grey   - disconnected */
   }
   *{margin:0;padding:0;box-sizing:border-box}
   html,body{height:100%;overflow:hidden}
@@ -61,15 +66,17 @@
     border:1px solid transparent;color:var(--inkMute);font-size:13px;transition:.1s;font-family:'JetBrains Mono',monospace}
   .sess:hover{background:#17171a}
   .sess.active{background:#1e1e21;border-color:#33333a;color:var(--ink)}
-  .sess .sdot{width:7px;height:7px;border-radius:50%;flex:none}
+  .sess .sdot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--stIdle)}
   .sess .sname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
   .sess .sname[contenteditable="true"]{outline:1px solid #45454b;border-radius:3px;padding:0 3px;cursor:text;white-space:nowrap;overflow:hidden}
   .sess .stag{font-size:10px;color:var(--inkDim);background:#1c1c1f;padding:2px 6px;border-radius:4px}
   .sess.active .stag{color:var(--inkMute);background:#28282c}
-  .sdot.run{background:#e6e6e8;box-shadow:0 0 6px rgba(255,255,255,.35)}
-  .sdot.idle{background:#45454b}
-  .sdot.busy{background:#e6e6e8;animation:pulse 1.4s ease-in-out infinite}
-  .sdot.attn{background:var(--yellow);box-shadow:0 0 6px rgba(254,188,46,.45);animation:pulse 1.4s ease-in-out infinite}
+  .sdot.s-idle{background:var(--stIdle);box-shadow:0 0 6px rgba(34,197,94,.4)}
+  .sdot.s-offline{background:var(--stOffline)}
+  .sdot.s-working,.sdot.s-looping{background:var(--stWorking);
+    box-shadow:0 0 6px rgba(234,179,8,.5);animation:pulse 1.4s ease-in-out infinite}
+  .sdot.s-attention{background:var(--stAttention);
+    box-shadow:0 0 8px rgba(239,68,68,.6);animation:pulse 1s ease-in-out infinite}
   @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
   .sess-count{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--inkDim);
     text-align:center;padding-top:5px;border-top:1px solid var(--border)}
@@ -78,11 +85,8 @@
   .term-wrap{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
   .term-head{height:36px;flex:none;display:flex;align-items:center;gap:10px;padding:0 15px;
     border-bottom:1px solid var(--border);background:#0d0d0e}
-  .term-head .path{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--inkDim);flex:1;
-    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .term-head .path b{color:var(--inkMute);font-weight:500}
-  .term-head .chip{font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 9px;border-radius:5px;
-    border:1px solid var(--border);color:var(--inkDim)}
+  .term-head .chip{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 9px;
+    border-radius:5px;border:1px solid var(--border);color:var(--inkDim)}
   .term-head .chip.live{color:var(--ink);border-color:#3a3a3f}
   /* xterm host - replaces the mock's fake .term div */
   .term{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px;background:var(--bg)}
@@ -111,7 +115,6 @@
     <!-- terminal -->
     <div class="term-wrap">
       <div class="term-head">
-        <span class="path" id="termPath"><b id="termPathName">-</b></span>
         <span class="chip" id="termChip">&#9679; idle</span>
       </div>
       <div class="term" id="term">
@@ -148,8 +151,9 @@
   const placeholder= document.getElementById('termPlaceholder');
   const sessListEl = document.getElementById('sessList');
   const sessCountEl= document.getElementById('sessCount');
-  const pathNameEl = document.getElementById('termPathName');
-  // (titlebar removed - the native window title bar is the app chrome now)
+  // chrome removed: no in-page titlebar, no session-name label in the term head -
+  // the native window title bar + sidebar carry the identity; the head keeps only
+  // the status chip.
   const chipEl     = document.getElementById('termChip');
   const btnNew     = document.getElementById('btnNew');
 
@@ -293,27 +297,30 @@
   function renderHead() {
     const s = sessions.find(x => x.id === activeSid);
     const name = s ? s.name : (panes[activeSid] ? panes[activeSid].name : '-');
-    pathNameEl.textContent = name;
-    document.title = name + ' - ML Suite Terminal';
+    document.title = name + ' - Mattdaemon';
     const pane = panes[activeSid];
     if (pane && pane.exited) {
       chipEl.className = 'chip'; chipEl.innerHTML = '&#9679; ended'; return;
     }
     const st = states[activeSid] || 'idle';
-    const label = { working: 'running', attention: 'needs you', looping: 'looping',
-                    idle: 'idle', offline: 'offline' }[st] || st;
+    const label = { working: 'working', attention: 'needs you', looping: 'looping',
+                    idle: 'ready', offline: 'offline' }[st] || st;
     const live = (st === 'working' || st === 'attention' || st === 'looping');
     chipEl.className = live ? 'chip live' : 'chip';
-    chipEl.innerHTML = '&#9679; ' + label;
+    chipEl.innerHTML = '<span style="color:' + stateColor(st) + '">&#9679;</span> ' + label;
   }
 
   // ── sidebar ──────────────────────────────────────────────────────────────
+  // Status classes/colours mirror the :3333 dashboard: green = done/waiting for
+  // you, yellow = working or looping, red = needs you, grey = offline.
   function dotClass(sid) {
-    const st = states[sid];
-    if (st === 'working' || st === 'looping') return 'busy';
-    if (st === 'attention') return 'attn';
-    if (st === 'offline') return 'idle';
-    return 'run';   // idle-but-alive = present
+    return 's-' + (states[sid] || 'idle');
+  }
+  function stateColor(st) {
+    if (st === 'working' || st === 'looping') return 'var(--stWorking)';
+    if (st === 'attention') return 'var(--stAttention)';
+    if (st === 'offline') return 'var(--stOffline)';
+    return 'var(--stIdle)';
   }
 
   function renderSessions() {

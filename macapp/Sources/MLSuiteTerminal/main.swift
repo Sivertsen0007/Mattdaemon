@@ -6,7 +6,7 @@ let myPid = ProcessInfo.processInfo.processIdentifier
 if let bundleId = Bundle.main.bundleIdentifier,
    NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
        .contains(where: { $0.processIdentifier != myPid }) {
-    NSLog("Another ML Suite Terminal instance is already running - exiting")
+    NSLog("Another Mattdaemon instance is already running - exiting")
     exit(0)
 }
 
