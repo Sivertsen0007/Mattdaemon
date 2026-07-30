@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ML Suite Terminal</title>
+<link rel="stylesheet" href="/static/vendor/xterm.css">
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/addon-fit.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap');
+
+  :root{
+    --bg:#0b0b0c; --surface:#151517; --surface2:#101012; --border:#242427;
+    --ink:#f2f2f3; --inkMute:#8a8a90; --inkDim:#5a5a60;
+    --accent:#f2f2f3;                 /* mono accent = white */
+    --green:#3ec97a; --red:#ff5f57; --yellow:#febc2e; --grn:#28c840;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{height:100%;overflow:hidden}
+  body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--ink)}
+
+  .app{height:100vh;display:flex;flex-direction:column}
+
+  /* ---- titlebar / traffic lights ---- */
+  .titlebar{
+    height:44px;flex:none;background:#161617;
+    border-bottom:1px solid var(--border);display:flex;align-items:center;
+    padding:0 15px;gap:14px;user-select:none;position:relative;
+  }
+  .lights{display:flex;gap:8px;z-index:2}
+  .lights i{width:12px;height:12px;border-radius:50%;display:block}
+  .lights .r{background:var(--red)} .lights .y{background:var(--yellow)} .lights .g{background:var(--grn)}
+  .titlebar .title{position:absolute;left:0;right:0;text-align:center;font-size:13px;color:var(--inkMute);
+    font-weight:500;pointer-events:none;display:flex;align-items:center;justify-content:center;gap:8px;
+    font-family:'JetBrains Mono',monospace}
+  .titlebar .title b{color:var(--ink);font-weight:500}
+  .titlebar .title .dot{width:6px;height:6px;border-radius:50%;background:#d0d0d2}
+  .titlebar .right{margin-left:auto;display:flex;gap:8px;z-index:2}
+  .tb-btn{background:transparent;border:1px solid var(--border);color:var(--inkMute);
+    font-size:12px;padding:5px 11px;border-radius:6px;cursor:pointer;font-family:'JetBrains Mono',monospace}
+  .tb-btn:hover{background:#202023;color:var(--ink)}
+
+  /* ---- body: sidebar + terminal ---- */
+  .body{flex:1;display:flex;min-height:0}
+
+  .sidebar{width:236px;flex:none;background:var(--surface2);border-right:1px solid var(--border);
+    display:flex;flex-direction:column;padding:13px 11px;gap:10px;min-height:0}
+  .side-top{display:flex;gap:7px}
+  .side-top button{flex:1;padding:8px;font-size:12px;border-radius:6px;background:transparent;
+    border:1px solid var(--border);color:var(--inkMute);cursor:pointer;font-family:'JetBrains Mono',monospace;white-space:nowrap}
+  .side-top button.bell{flex:none;width:38px}
+  .side-top button:hover{border-color:#3a3a3f;color:var(--ink)}
+  .btn-new{padding:10px 12px;font-size:13px;font-weight:600;border-radius:6px;cursor:pointer;
+    color:#0b0b0c;background:#f2f2f3;border:1px solid #f2f2f3;font-family:'JetBrains Mono',monospace}
+  .btn-new:hover{background:#fff}
+  .btn-new:disabled{opacity:.5;cursor:default}
+  .side-label{font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+    color:#54545a;padding:4px 6px 0;font-family:'JetBrains Mono',monospace}
+  .sess-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+  .sess{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:6px;cursor:pointer;
+    border:1px solid transparent;color:var(--inkMute);font-size:13px;transition:.1s;font-family:'JetBrains Mono',monospace}
+  .sess:hover{background:#17171a}
+  .sess.active{background:#1e1e21;border-color:#33333a;color:var(--ink)}
+  .sess .sdot{width:7px;height:7px;border-radius:50%;flex:none}
+  .sess .sname{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:500}
+  .sess .sname[contenteditable="true"]{outline:1px solid #45454b;border-radius:3px;padding:0 3px;cursor:text;white-space:nowrap;overflow:hidden}
+  .sess .stag{font-size:10px;color:var(--inkDim);background:#1c1c1f;padding:2px 6px;border-radius:4px}
+  .sess.active .stag{color:var(--inkMute);background:#28282c}
+  .sdot.run{background:#e6e6e8;box-shadow:0 0 6px rgba(255,255,255,.35)}
+  .sdot.idle{background:#45454b}
+  .sdot.busy{background:#e6e6e8;animation:pulse 1.4s ease-in-out infinite}
+  .sdot.attn{background:var(--yellow);box-shadow:0 0 6px rgba(254,188,46,.45);animation:pulse 1.4s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}
+  .sess-count{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--inkDim);
+    text-align:center;padding-top:5px;border-top:1px solid var(--border)}
+
+  /* ---- terminal ---- */
+  .term-wrap{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
+  .term-head{height:36px;flex:none;display:flex;align-items:center;gap:10px;padding:0 15px;
+    border-bottom:1px solid var(--border);background:#0d0d0e}
+  .term-head .path{font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--inkDim);flex:1;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .term-head .path b{color:var(--inkMute);font-weight:500}
+  .term-head .chip{font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 9px;border-radius:5px;
+    border:1px solid var(--border);color:var(--inkDim)}
+  .term-head .chip.live{color:var(--ink);border-color:#3a3a3f}
+  /* xterm host - replaces the mock's fake .term div */
+  .term{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px;background:var(--bg)}
+  .term .xterm{height:100%}
+  .term .xterm-viewport::-webkit-scrollbar,.sess-list::-webkit-scrollbar{width:10px}
+  .term .xterm-viewport::-webkit-scrollbar-thumb,.sess-list::-webkit-scrollbar-thumb{background:#26262a;border-radius:6px}
+  /* an empty state / connecting notice overlaid on the terminal host */
+  .term .placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+    font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--inkDim);pointer-events:none}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- titlebar -->
+  <div class="titlebar">
+    <div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+    <div class="title"><span class="dot"></span>ML Suite Terminal &nbsp;&mdash;&nbsp; <b id="titleName">terminal</b></div>
+    <div class="right">
+      <button class="tb-btn" id="btnReload">&#8635; Reconnect</button>
+    </div>
+  </div>
+
+  <div class="body">
+    <!-- sidebar -->
+    <aside class="sidebar">
+      <button class="btn-new" id="btnNew">+ New session</button>
+
+      <div class="side-label">Sessions</div>
+      <div class="sess-list" id="sessList"></div>
+
+      <div class="sess-count" id="sessCount">0 sessions</div>
+    </aside>
+
+    <!-- terminal -->
+    <div class="term-wrap">
+      <div class="term-head">
+        <span class="path" id="termPath"><b id="termPathName">-</b></span>
+        <span class="chip" id="termChip">&#9679; idle</span>
+      </div>
+      <div class="term" id="term">
+        <div class="placeholder" id="termPlaceholder">No session &mdash; create one to begin.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ─────────────────────────────────────────────────────────────────────────
+  // ML Suite Terminal - real xterm.js UI wired to the tmux-backed web-terminal
+  // API (see clients/_self/Work/dev/mac-terminal/terminal_manager.py and the
+  // working client at shared/terminal-popup.html). The mock's demo SESSIONS
+  // object is gone; every pane here is a live shell.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const TERM_THEME = {
+    background: '#0b0b0c',
+    foreground: '#f2f2f3',
+    cursor: '#f2f2f3',
+    selectionBackground: 'rgba(242,242,243,0.20)',
+  };
+  const TERM_FONT = "'JetBrains Mono', 'Fira Code', monospace";
+
+  const termHost   = document.getElementById('term');
+  const placeholder= document.getElementById('termPlaceholder');
+  const sessListEl = document.getElementById('sessList');
+  const sessCountEl= document.getElementById('sessCount');
+  const pathNameEl = document.getElementById('termPathName');
+  const chipEl     = document.getElementById('termChip');
+  const titleNameEl= document.getElementById('titleName');
+  const btnNew     = document.getElementById('btnNew');
+
+  // One live xterm "pane" per session id, kept alive so scrollback and the
+  // stream are not destroyed when you switch away and back.
+  //   panes[sid] = { term, fit, container, abort, connected, name, exited }
+  const panes = {};
+  let sessions = [];      // last /sessions listing
+  let states = {};        // last /states  (sid -> working|attention|idle|looping|offline)
+  let activeSid = null;
+
+  // ── pane lifecycle ──────────────────────────────────────────────────────
+  function makePane(sid, name) {
+    const container = document.createElement('div');
+    container.style.width = '100%';
+    container.style.height = '100%';
+    container.style.display = 'none';
+    termHost.appendChild(container);
+
+    const term = new Terminal({
+      cursorBlink: true,
+      fontSize: 13.5,
+      fontFamily: TERM_FONT,
+      theme: TERM_THEME,
+      allowProposedApi: true,
+    });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    term.open(container);
+
+    const pane = { term, fit, container, abort: null, connected: false, name, exited: false };
+    panes[sid] = pane;
+
+    // debounced input (~16ms) like the reference client
+    let inputBuffer = '', flushTimer = null, resizeTimer = null;
+    term.onData(data => {
+      inputBuffer += data;
+      if (!flushTimer) {
+        flushTimer = setTimeout(() => {
+          const buf = inputBuffer; inputBuffer = ''; flushTimer = null;
+          fetch('/api/terminal/input', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sid, data: buf })
+          }).catch(() => {});
+        }, 16);
+      }
+    });
+    // debounced resize (~200ms) like the reference client
+    term.onResize(({ cols, rows }) => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        fetch('/api/terminal/resize', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sid, cols, rows })
+        }).catch(() => {});
+      }, 200);
+    });
+
+    connectPane(sid);
+    return pane;
+  }
+
+  function connectPane(sid) {
+    const pane = panes[sid];
+    if (!pane || pane.connected) return;
+    pane.exited = false;
+    pane.abort = new AbortController();
+    pane.connected = true;
+    fetch(`/api/terminal/stream?sid=${encodeURIComponent(sid)}`, { signal: pane.abort.signal })
+      .then(res => {
+        if (!res.ok) throw new Error('stream failed');
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        function pump() {
+          reader.read().then(({ done, value }) => {
+            if (done) { pane.connected = false; return; }
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop();
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              let evt;
+              try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+              if (evt.type === 'output' || evt.type === 'replay') {
+                const bytes = Uint8Array.from(atob(evt.data), c => c.charCodeAt(0));
+                pane.term.write(bytes);
+              } else if (evt.type === 'exit') {
+                pane.term.write('\r\n\x1b[33m[Session ended]\x1b[0m\r\n');
+                pane.exited = true;
+                pane.connected = false;
+                if (sid === activeSid) renderHead();
+                return;
+              }
+              // ping / detached / desync: keep pumping; the server re-attaches
+              // the underlying view for us.
+            }
+            pump();
+          }).catch(() => { pane.connected = false; });
+        }
+        pump();
+        if (sid === activeSid) { try { pane.fit.fit(); } catch {} }
+      })
+      .catch(() => { pane.connected = false; });
+  }
+
+  function destroyPane(sid) {
+    const pane = panes[sid];
+    if (!pane) return;
+    try { pane.abort && pane.abort.abort(); } catch {}
+    try { pane.term.dispose(); } catch {}
+    if (pane.container.parentNode) pane.container.parentNode.removeChild(pane.container);
+    delete panes[sid];
+  }
+
+  // ── switching the active session ─────────────────────────────────────────
+  function switchTo(sid) {
+    if (!sid) return;
+    activeSid = sid;
+    let pane = panes[sid];
+    if (!pane) {
+      const s = sessions.find(x => x.id === sid);
+      pane = makePane(sid, s ? s.name : sid);
+    } else if (!pane.connected && !pane.exited) {
+      // A session whose stream had dropped (server restart etc.) reconnects on
+      // focus; tmux redraws the current screen.
+      connectPane(sid);
+    }
+    placeholder.style.display = 'none';
+    for (const id in panes) panes[id].container.style.display = (id === sid) ? 'block' : 'none';
+    // fit after the container becomes visible (0-size fit is a no-op)
+    requestAnimationFrame(() => {
+      try { pane.fit.fit(); } catch {}
+      pane.term.focus();
+    });
+    renderSessions();
+    renderHead();
+  }
+
+  // ── header + status chip ─────────────────────────────────────────────────
+  function renderHead() {
+    const s = sessions.find(x => x.id === activeSid);
+    const name = s ? s.name : (panes[activeSid] ? panes[activeSid].name : '-');
+    pathNameEl.textContent = name;
+    titleNameEl.textContent = name;
+    document.title = name + ' - ML Suite Terminal';
+    const pane = panes[activeSid];
+    if (pane && pane.exited) {
+      chipEl.className = 'chip'; chipEl.innerHTML = '&#9679; ended'; return;
+    }
+    const st = states[activeSid] || 'idle';
+    const label = { working: 'running', attention: 'needs you', looping: 'looping',
+                    idle: 'idle', offline: 'offline' }[st] || st;
+    const live = (st === 'working' || st === 'attention' || st === 'looping');
+    chipEl.className = live ? 'chip live' : 'chip';
+    chipEl.innerHTML = '&#9679; ' + label;
+  }
+
+  // ── sidebar ──────────────────────────────────────────────────────────────
+  function dotClass(sid) {
+    const st = states[sid];
+    if (st === 'working' || st === 'looping') return 'busy';
+    if (st === 'attention') return 'attn';
+    if (st === 'offline') return 'idle';
+    return 'run';   // idle-but-alive = present
+  }
+
+  function renderSessions() {
+    sessListEl.innerHTML = '';
+    for (const s of sessions) {
+      const row = document.createElement('div');
+      row.className = 'sess' + (s.id === activeSid ? ' active' : '');
+      row.dataset.s = s.id;
+
+      const dot = document.createElement('span');
+      dot.className = 'sdot ' + dotClass(s.id);
+
+      const nm = document.createElement('span');
+      nm.className = 'sname';
+      nm.textContent = s.name;
+
+      const tag = document.createElement('span');
+      tag.className = 'stag';
+      tag.textContent = s.id.slice(0, 4);
+
+      row.appendChild(dot); row.appendChild(nm); row.appendChild(tag);
+
+      row.addEventListener('click', () => {
+        if (nm.getAttribute('contenteditable') === 'true') return;
+        switchTo(s.id);
+      });
+      // double-click the name to rename via POST /api/terminal/rename
+      nm.addEventListener('dblclick', ev => {
+        ev.stopPropagation();
+        startRename(nm, s);
+      });
+
+      sessListEl.appendChild(row);
+    }
+    const running = sessions.filter(s => {
+      const st = states[s.id];
+      return st === 'working' || st === 'attention' || st === 'looping';
+    }).length;
+    sessCountEl.textContent = sessions.length + ' session' + (sessions.length === 1 ? '' : 's')
+      + (running ? ' · ' + running + ' running' : '');
+  }
+
+  function startRename(nm, s) {
+    nm.setAttribute('contenteditable', 'true');
+    nm.focus();
+    const range = document.createRange();
+    range.selectNodeContents(nm);
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+
+    let done = false;
+    const finish = commit => {
+      if (done) return; done = true;
+      nm.removeAttribute('contenteditable');
+      const newName = nm.textContent.trim();
+      if (commit && newName && newName !== s.name) {
+        fetch('/api/terminal/rename', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sid: s.id, name: newName })
+        }).then(() => refreshSessions()).catch(() => {});
+        s.name = newName;
+        if (s.id === activeSid) renderHead();
+      } else {
+        nm.textContent = s.name;
+      }
+    };
+    nm.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+    });
+    nm.addEventListener('blur', () => finish(true), { once: true });
+  }
+
+  // ── polling: sessions + states ───────────────────────────────────────────
+  async function refreshSessions() {
+    try {
+      const r = await fetch('/api/terminal/sessions');
+      const j = await r.json();
+      if (!j.ok) return;
+      sessions = j.sessions || [];
+    } catch { return; }
+    // drop panes for sessions that no longer exist
+    const live = new Set(sessions.map(s => s.id));
+    for (const id in panes) if (!live.has(id)) destroyPane(id);
+    // auto-select something if nothing is active
+    if (!activeSid || !live.has(activeSid)) {
+      if (sessions.length) switchTo(sessions[0].id);
+      else { activeSid = null; placeholder.style.display = 'flex'; renderHead(); }
+    }
+    renderSessions();
+    if (activeSid) renderHead();
+  }
+
+  async function refreshStates() {
+    try {
+      const r = await fetch('/api/terminal/states');
+      const j = await r.json();
+      if (j.ok) states = j.states || {};
+    } catch { return; }
+    renderSessions();
+    if (activeSid) renderHead();
+  }
+
+  // ── new session ──────────────────────────────────────────────────────────
+  async function newSession() {
+    btnNew.disabled = true;
+    try {
+      const r = await fetch('/api/terminal/start', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      const j = await r.json();
+      if (j.ok && j.session) {
+        await refreshSessions();
+        switchTo(j.session.id);
+      }
+    } catch {} finally { btnNew.disabled = false; }
+  }
+  btnNew.addEventListener('click', newSession);
+
+  document.getElementById('btnReload').addEventListener('click', () => {
+    const pane = panes[activeSid];
+    if (pane && !pane.connected) { pane.exited = false; connectPane(activeSid); }
+    if (pane) { try { pane.fit.fit(); } catch {} }
+  });
+
+  // keep the active pane fitted to the window
+  new ResizeObserver(() => {
+    const pane = panes[activeSid];
+    if (pane) { try { pane.fit.fit(); } catch {} }
+  }).observe(termHost);
+
+  // ── boot ─────────────────────────────────────────────────────────────────
+  (async function init() {
+    await refreshStates();
+    await refreshSessions();
+    setInterval(refreshStates, 3000);
+    setInterval(refreshSessions, 8000);
+  })();
+</script>
+</body>
+</html>
