@@ -402,6 +402,18 @@ _SPINE_SHELLS = {"bash", "zsh", "sh", "fish", "dash", "ksh",
 # with the `node` reasoning in _QUIET_CMDS - miss a bare `node x.js`, never lie.
 _AMBIGUOUS_RUNTIME = {"claude", "node"}
 
+# Claude Code renames its own process to its version, so on macOS tmux reports
+# the pane's foreground command as e.g. "2.1.199" instead of "claude". A bare
+# version string is therefore treated like the ambiguous claude/node runtime:
+# idle at its prompt unless its process subtree is actually doing work. Without
+# this an idle Claude session shows a version cmd that is not in _QUIET_CMDS and
+# gets wrongly painted yellow (working) forever.
+_VERSION_RE = re.compile(r"^v?\d+(?:\.\d+)+$")
+
+
+def _looks_like_version(cmd):
+    return bool(cmd and _VERSION_RE.match(cmd.strip()))
+
 
 def _build_proc_tree():
     """One ps snapshot -> {ppid: [(pid, comm), ...]} for the whole box.
@@ -513,7 +525,7 @@ def classify_session(sid, loop_raw="", cmd="", pane_pid="", proc_kids=None, webs
     # A foreground command that is not a shell and not Claude is running work.
     # Ranked BELOW attention so a prompting installer (cmd=apt, asking y/n)
     # still shows red rather than being painted over yellow.
-    if cmd and cmd.lower() not in _QUIET_CMDS:
+    if cmd and cmd.lower() not in _QUIET_CMDS and not _looks_like_version(cmd):
         return "working"
     # Background work the checks above cannot see: a `cmd &` job, or a command
     # Claude launched with run_in_background. It never changes the foreground
@@ -524,7 +536,7 @@ def classify_session(sid, loop_raw="", cmd="", pane_pid="", proc_kids=None, webs
     # The hook stamped working (PreToolUse / prompt) - trust it only while Claude
     # is still the foreground process, so a dead session that never fired Stop
     # cannot stay stranded yellow.
-    if (ws == "working" and cmd.lower() in ("claude", "node")
+    if (ws == "working" and (cmd.lower() in ("claude", "node") or _looks_like_version(cmd))
             and time.time() - ws_ts < _WEBSTATE_WORKING_TTL):
         return "working"
     # An armed loop is between iterations, not finished. The pane is quiet, so

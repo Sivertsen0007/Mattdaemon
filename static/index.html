@@ -323,7 +323,9 @@
     return 'var(--stIdle)';
   }
 
+  let renaming = false;   // true while an inline rename is open - pauses re-render
   function renderSessions() {
+    if (renaming) return;   // never tear down the list mid-edit (would drop focus)
     sessListEl.innerHTML = '';
     for (const s of sessions) {
       const row = document.createElement('div');
@@ -369,6 +371,7 @@
   }
 
   function startRename(nm, s) {
+    renaming = true;
     nm.setAttribute('contenteditable', 'true');
     nm.focus();
     const range = document.createRange();
@@ -379,6 +382,7 @@
     let done = false;
     const finish = commit => {
       if (done) return; done = true;
+      renaming = false;
       nm.removeAttribute('contenteditable');
       const newName = nm.textContent.trim();
       if (commit && newName && newName !== s.name) {
@@ -417,7 +421,15 @@
 
   document.getElementById('ctxRename').addEventListener('click', () => {
     const t = ctxTarget; closeCtx();
-    if (t) startRename(t.nm, t.s);
+    if (!t) return;
+    // Defer past this click: closeCtx() hides the menu and the click's own focus
+    // fixups would otherwise blur the edit field the instant it opens (the
+    // "rename drops out" bug). Re-resolve the row in case the list re-rendered.
+    setTimeout(() => {
+      const row = sessListEl.querySelector('.sess[data-s="' + t.s.id + '"]');
+      const nm = row ? row.querySelector('.sname') : t.nm;
+      if (nm) startRename(nm, t.s);
+    }, 0);
   });
   document.getElementById('ctxClose').addEventListener('click', () => {
     const t = ctxTarget; closeCtx();
