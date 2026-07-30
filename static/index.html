@@ -45,6 +45,22 @@
   .ctx .sep{height:1px;background:var(--border);margin:4px 2px}
   .ctx .k{width:14px;text-align:center;opacity:.8}
 
+  /* ---- confirm modal (custom - WKWebView suppresses window.confirm) ---- */
+  .modal-backdrop{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.55);
+    display:none;align-items:center;justify-content:center}
+  .modal-backdrop.open{display:flex}
+  .modal{background:#161617;border:1px solid var(--border);border-radius:12px;padding:20px 20px 16px;
+    width:340px;max-width:90vw;box-shadow:0 24px 70px rgba(0,0,0,.6);font-family:'JetBrains Mono',monospace}
+  .modal-title{font-size:14px;font-weight:600;color:var(--ink);margin-bottom:9px}
+  .modal-msg{font-size:12px;color:var(--inkMute);line-height:1.55;margin-bottom:18px}
+  .modal-actions{display:flex;gap:8px;justify-content:flex-end}
+  .modal-actions button{font-family:inherit;font-size:12px;padding:7px 14px;border-radius:6px;
+    cursor:pointer;border:1px solid var(--border)}
+  .modal .btn-cancel{background:transparent;color:var(--inkMute)}
+  .modal .btn-cancel:hover{background:#202023;color:var(--ink)}
+  .modal .btn-danger{background:var(--stAttention);border-color:var(--stAttention);color:#fff}
+  .modal .btn-danger:hover{filter:brightness(1.12)}
+
   /* ---- body: sidebar + terminal ---- */
   .body{flex:1;display:flex;min-height:0}
 
@@ -129,6 +145,18 @@
   <button id="ctxRename"><span class="k">&#9998;</span> Rename</button>
   <div class="sep"></div>
   <button id="ctxClose" class="danger"><span class="k">&#10005;</span> Close session</button>
+</div>
+
+<!-- confirm dialog -->
+<div class="modal-backdrop" id="confirmBackdrop">
+  <div class="modal">
+    <div class="modal-title" id="confirmTitle">Close session?</div>
+    <div class="modal-msg" id="confirmMsg"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="confirmCancel">Cancel</button>
+      <button class="btn-danger" id="confirmOk">Close session</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -434,16 +462,50 @@
   document.getElementById('ctxClose').addEventListener('click', () => {
     const t = ctxTarget; closeCtx();
     if (!t) return;
-    fetch('/api/terminal/stop', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sid: t.s.id })
-    }).then(() => refreshSessions()).catch(() => {});
+    // Confirm first - a misclick here would otherwise kill the session and every
+    // process in it. Custom modal because WKWebView suppresses window.confirm().
+    askConfirm('Close "' + t.s.name + '"?',
+      'This ends the session and any processes running in it. This cannot be undone.',
+      'Close session',
+      () => {
+        fetch('/api/terminal/stop', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sid: t.s.id })
+        }).then(() => refreshSessions()).catch(() => {});
+      });
   });
   // dismiss on any click elsewhere, Escape, scroll or resize
   window.addEventListener('click', closeCtx);
   window.addEventListener('resize', closeCtx);
   window.addEventListener('blur', closeCtx);
   document.addEventListener('keydown', ev => { if (ev.key === 'Escape') closeCtx(); });
+
+  // ── confirm dialog (custom; WKWebView suppresses window.confirm) ──────────
+  const confirmBackdrop = document.getElementById('confirmBackdrop');
+  const confirmTitleEl  = document.getElementById('confirmTitle');
+  const confirmMsgEl    = document.getElementById('confirmMsg');
+  const confirmOkEl     = document.getElementById('confirmOk');
+  const confirmCancelEl = document.getElementById('confirmCancel');
+  let confirmOnOk = null;
+
+  function askConfirm(title, message, okLabel, onOk) {
+    confirmTitleEl.textContent = title;
+    confirmMsgEl.textContent = message;
+    confirmOkEl.textContent = okLabel || 'Confirm';
+    confirmOnOk = onOk;
+    confirmBackdrop.classList.add('open');
+    confirmOkEl.focus();
+  }
+  function closeConfirm() { confirmBackdrop.classList.remove('open'); confirmOnOk = null; }
+
+  confirmOkEl.addEventListener('click', () => { const f = confirmOnOk; closeConfirm(); if (f) f(); });
+  confirmCancelEl.addEventListener('click', closeConfirm);
+  confirmBackdrop.addEventListener('click', ev => { if (ev.target === confirmBackdrop) closeConfirm(); });
+  document.addEventListener('keydown', ev => {
+    if (!confirmBackdrop.classList.contains('open')) return;
+    if (ev.key === 'Escape') { ev.preventDefault(); closeConfirm(); }
+    else if (ev.key === 'Enter') { ev.preventDefault(); const f = confirmOnOk; closeConfirm(); if (f) f(); }
+  });
 
   // ── polling: sessions + states ───────────────────────────────────────────
   async function refreshSessions() {
