@@ -80,6 +80,36 @@ _GONE_MARKERS = (
 )
 
 
+def _resolve_tmux():
+    """Absolute path to a usable tmux binary, or None if none is found.
+
+    A double-clicked .app inherits launchd's minimal PATH (/usr/bin:/bin:...),
+    which misses every place tmux normally lives - a Homebrew prefix or a
+    userland (~/.local) build. shutil.which alone therefore returns None inside
+    the bundled app even when tmux is installed, so we also probe the usual
+    absolute locations. MTS_TMUX_BIN overrides everything for odd setups.
+    """
+    override = os.environ.get("MTS_TMUX_BIN")
+    if override and os.path.isfile(override) and os.access(override, os.X_OK):
+        return override
+    found = shutil.which("tmux")
+    if found:
+        return found
+    home = os.path.expanduser("~")
+    for cand in (os.path.join(home, ".local", "bin", "tmux"),
+                 "/opt/homebrew/bin/tmux",
+                 "/usr/local/bin/tmux",
+                 "/usr/bin/tmux"):
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
+
+
+# Resolved once at import. Falls back to the bare name so a tmux that only
+# appears on PATH later still gets one last chance via the OS resolver.
+TMUX_BIN = _resolve_tmux() or "tmux"
+
+
 def _tmux(*args, timeout=10):
     """Run a tmux command against the dedicated socket.
 
@@ -89,7 +119,7 @@ def _tmux(*args, timeout=10):
     """
     try:
         return subprocess.run(
-            ["tmux", "-L", TMUX_SOCKET, *args],
+            [TMUX_BIN, "-L", TMUX_SOCKET, *args],
             capture_output=True, text=True, timeout=timeout,
         )
     except subprocess.TimeoutExpired:
@@ -105,7 +135,7 @@ def _tmux_says_gone(result):
 
 
 def _tmux_available():
-    return shutil.which("tmux") is not None
+    return _resolve_tmux() is not None
 
 
 def _sname(sid):
@@ -269,7 +299,7 @@ def _open_view(sid, cols=80, rows=24):
     env.pop("TMUX", None)  # never let a nested client refuse to attach
 
     proc = subprocess.Popen(
-        ["tmux", "-L", TMUX_SOCKET, "attach-session", "-t", _sname(sid)],
+        [TMUX_BIN, "-L", TMUX_SOCKET, "attach-session", "-t", _sname(sid)],
         stdin=slave_fd, stdout=slave_fd, stderr=slave_fd,
         preexec_fn=os.setsid, env=env,
         cwd=os.environ.get("HOME", "/"),
@@ -644,17 +674,23 @@ def start_session(name=None):
 
     sid = uuid.uuid4().hex[:12]
     if name is None:
+        # Default sessions are named after the project: the first is "AI-Hub",
+        # then "AI-Hub 2", "AI-Hub 3"... (the bare name counts as 1).
+        base = "AI-Hub"
         existing = []
         for s in _tmux_sessions():
-            if s["name"].startswith("Terminal "):
+            nm = s["name"]
+            if nm == base:
+                existing.append(1)
+            elif nm.startswith(base + " "):
                 try:
-                    existing.append(int(s["name"].split(" ", 1)[1]))
+                    existing.append(int(nm.split(" ")[-1]))
                 except (ValueError, IndexError):
                     pass
         n = 1
         while n in existing:
             n += 1
-        name = f"Terminal {n}"
+        name = base if n == 1 else f"{base} {n}"
 
     cols, rows = 80, 24
     r = _tmux("new-session", "-d", "-s", _sname(sid), "-c", START_DIR,

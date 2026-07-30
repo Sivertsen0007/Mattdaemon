@@ -88,6 +88,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         process.arguments = ["python3", script,
                              "--port", String(port),
                              "--home", homeDir]
+        // A Finder-launched .app inherits launchd's minimal PATH
+        // (/usr/bin:/bin:/usr/sbin:/sbin), which misses tmux in a Homebrew
+        // prefix or a userland (~/.local) build. Prepend those so the server -
+        // and the tmux client it spawns, which inherits this environment - can
+        // find tmux no matter how the app was launched.
+        var env = ProcessInfo.processInfo.environment
+        let home = env["HOME"] ?? NSHomeDirectory()
+        let extraPaths = ["\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin"]
+        let basePath = env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin"
+        env["PATH"] = (extraPaths + [basePath]).joined(separator: ":")
+        process.environment = env
         // The server resolves terminal_manager.py and static/ relative to its
         // own directory, so run it from the bundle's Resources folder.
         process.currentDirectoryURL = URL(fileURLWithPath: script).deletingLastPathComponent()
@@ -147,7 +158,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let bound = withUnsafePointer(to: &addr) { ptr -> Int32 in
             ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
-                bind(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                // Darwin. qualifier: NSObject has an instance method bind(_:to:withKeyPath:options:)
+                // (Cocoa Bindings) that otherwise shadows the global socket bind().
+                Darwin.bind(fd, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
         return bound == 0

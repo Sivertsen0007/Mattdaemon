@@ -22,24 +22,11 @@
 
   .app{height:100vh;display:flex;flex-direction:column}
 
-  /* ---- titlebar / traffic lights ---- */
-  .titlebar{
-    height:44px;flex:none;background:#161617;
-    border-bottom:1px solid var(--border);display:flex;align-items:center;
-    padding:0 15px;gap:14px;user-select:none;position:relative;
-  }
-  .lights{display:flex;gap:8px;z-index:2}
-  .lights i{width:12px;height:12px;border-radius:50%;display:block}
-  .lights .r{background:var(--red)} .lights .y{background:var(--yellow)} .lights .g{background:var(--grn)}
-  .titlebar .title{position:absolute;left:0;right:0;text-align:center;font-size:13px;color:var(--inkMute);
-    font-weight:500;pointer-events:none;display:flex;align-items:center;justify-content:center;gap:8px;
-    font-family:'JetBrains Mono',monospace}
-  .titlebar .title b{color:var(--ink);font-weight:500}
-  .titlebar .title .dot{width:6px;height:6px;border-radius:50%;background:#d0d0d2}
-  .titlebar .right{margin-left:auto;display:flex;gap:8px;z-index:2}
+  /* ---- reconnect button (lives in the sidebar footer) ---- */
   .tb-btn{background:transparent;border:1px solid var(--border);color:var(--inkMute);
     font-size:12px;padding:5px 11px;border-radius:6px;cursor:pointer;font-family:'JetBrains Mono',monospace}
   .tb-btn:hover{background:#202023;color:var(--ink)}
+  .sb-reconnect{width:100%}
 
   /* ---- body: sidebar + terminal ---- */
   .body{flex:1;display:flex;min-height:0}
@@ -97,15 +84,6 @@
 </head>
 <body>
 <div class="app">
-  <!-- titlebar -->
-  <div class="titlebar">
-    <div class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></div>
-    <div class="title"><span class="dot"></span>ML Suite Terminal &nbsp;&mdash;&nbsp; <b id="titleName">terminal</b></div>
-    <div class="right">
-      <button class="tb-btn" id="btnReload">&#8635; Reconnect</button>
-    </div>
-  </div>
-
   <div class="body">
     <!-- sidebar -->
     <aside class="sidebar">
@@ -115,6 +93,7 @@
       <div class="sess-list" id="sessList"></div>
 
       <div class="sess-count" id="sessCount">0 sessions</div>
+      <button class="tb-btn sb-reconnect" id="btnReload">&#8635; Reconnect</button>
     </aside>
 
     <!-- terminal -->
@@ -151,8 +130,8 @@
   const sessListEl = document.getElementById('sessList');
   const sessCountEl= document.getElementById('sessCount');
   const pathNameEl = document.getElementById('termPathName');
+  // (titlebar removed - the native window title bar is the app chrome now)
   const chipEl     = document.getElementById('termChip');
-  const titleNameEl= document.getElementById('titleName');
   const btnNew     = document.getElementById('btnNew');
 
   // One live xterm "pane" per session id, kept alive so scrollback and the
@@ -296,7 +275,6 @@
     const s = sessions.find(x => x.id === activeSid);
     const name = s ? s.name : (panes[activeSid] ? panes[activeSid].name : '-');
     pathNameEl.textContent = name;
-    titleNameEl.textContent = name;
     document.title = name + ' - ML Suite Terminal';
     const pane = panes[activeSid];
     if (pane && pane.exited) {
