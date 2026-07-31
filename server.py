@@ -11,8 +11,19 @@ terminal_manager.py, which we import.
 Local app => we bind to 127.0.0.1 ONLY, never 0.0.0.0. There is no auth here;
 loopback is the boundary.
 
+VPS aggregation (optional)
+--------------------------
+If a VPS is configured (base_url + token, see _load_vps_config), this server
+also becomes a *proxy* for the :3333 dashboard's terminal API - which exposes
+the byte-identical routes. Its sessions are merged into /sessions and /states
+with their ids namespaced "vps:<id>", and any control call (stream, input,
+resize, stop, rename, upload, start) whose sid carries that prefix is forwarded
+to the box with a Bearer token. The token therefore stays on this machine and
+never reaches the browser. When no VPS is configured, behaviour is unchanged.
+
 Usage:
     python3 server.py [--port N] [--home DIR]
+                      [--vps-url URL] [--vps-token TOKEN]
     python3 server.py --selftest      # round-trips a token through a real tmux
                                         # shell and prints VERIFY_OK / exits 1
 
@@ -24,6 +35,8 @@ import json
 import os
 import sys
 import threading
+import urllib.error
+import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -61,6 +74,159 @@ _CONTENT_TYPES = {
 def _ctype_for(path):
     return _CONTENT_TYPES.get(os.path.splitext(path)[1].lower(),
                               "application/octet-stream")
+
+
+# ── VPS aggregation ────────────────────────────────────────────────────────
+# When configured, VPS session ids are namespaced with this prefix so they can
+# never collide with a local tmux id and so the router knows where to send a
+# control call. The frontend treats the whole thing as an opaque id.
+SID_VPS_PREFIX = "vps:"
+
+# Bound once in main()/_run_selftest via _load_vps_config(). Empty base = the
+# proxy is off and this behaves exactly like the pre-VPS local-only server.
+VPS_BASE = ""     # e.g. "http://72.62.195.38:3333" (no trailing slash)
+VPS_TOKEN = ""    # dashboard Bearer token
+VPS_TIMEOUT = 6   # seconds for non-streaming calls; the box is one hop away
+
+
+# The .app and run-terminal.sh keep their config in different places; we read
+# whichever exists so neither launcher has to learn about the vps block.
+_CONFIG_CANDIDATES = [
+    os.path.join(HERE, "mts-config.json"),
+    os.path.expanduser(
+        "~/Library/Application Support/MLSuiteTerminal/mts-config.json"),
+]
+
+
+def _load_vps_config(cli_url=None, cli_token=None):
+    """Resolve the VPS base url + token, most-specific source winning:
+    CLI flags > env (MTS_VPS_URL / MTS_VPS_TOKEN) > a "vps" block in either
+    mts-config.json. A base url with no token (or vice versa) leaves the proxy
+    off - both are required. Sets the module globals and returns (base, token)."""
+    global VPS_BASE, VPS_TOKEN
+
+    base = cli_url or os.environ.get("MTS_VPS_URL", "")
+    token = cli_token or os.environ.get("MTS_VPS_TOKEN", "")
+
+    if not (base and token):
+        for path in _CONFIG_CANDIDATES:
+            try:
+                with open(path) as f:
+                    vps = (json.load(f) or {}).get("vps") or {}
+            except (OSError, ValueError):
+                continue
+            base = base or vps.get("base_url", "") or vps.get("url", "")
+            token = token or vps.get("token", "")
+            if base and token:
+                break
+
+    VPS_BASE = (base or "").rstrip("/")
+    VPS_TOKEN = token or ""
+    return VPS_BASE, VPS_TOKEN
+
+
+def _vps_enabled():
+    return bool(VPS_BASE and VPS_TOKEN)
+
+
+def _split_sid(sid):
+    """('vps', real_id) for a namespaced sid, else ('local', sid)."""
+    if sid and sid.startswith(SID_VPS_PREFIX):
+        return "vps", sid[len(SID_VPS_PREFIX):]
+    return "local", sid
+
+
+def _vps_headers():
+    return {"Authorization": "Bearer " + VPS_TOKEN}
+
+
+def _vps_get(path):
+    """GET json from the box. Returns the decoded dict, or None on any failure -
+    the caller degrades to local-only rather than erroring the whole request."""
+    try:
+        req = urllib.request.Request(VPS_BASE + path, headers=_vps_headers())
+        with urllib.request.urlopen(req, timeout=VPS_TIMEOUT) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except Exception:
+        return None
+
+
+def _vps_post(path, body, timeout=None):
+    """POST json to the box, return the decoded dict (or an error dict)."""
+    try:
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(
+            VPS_BASE + path, data=data, method="POST",
+            headers={**_vps_headers(), "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout or VPS_TIMEOUT) as r:
+            return json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        return {"ok": False, "error": "vps http %s" % e.code}
+    except Exception as e:
+        return {"ok": False, "error": "vps unreachable: %s" % e}
+
+
+def _vps_start(name=None):
+    """Start a session on the box and namespace the id it returns, so the
+    frontend switches straight to the new vps: pane."""
+    res = _vps_post("/api/terminal/start", {"name": name})
+    if res and res.get("ok") and res.get("session"):
+        sess = res["session"]
+        sess["realid"] = sess.get("id", "")
+        sess["id"] = SID_VPS_PREFIX + sess.get("id", "")
+        sess["host"] = "vps"
+    return res
+
+
+def _vps_open_stream(real_id):
+    """Open the box's SSE stream for a session; returns the live response object
+    (the caller pumps it) or None. A generous read timeout survives the stream's
+    idle gaps between keepalive pings but still unblocks if the box dies."""
+    try:
+        url = VPS_BASE + "/api/terminal/stream?sid=" + urllib.request.quote(real_id)
+        req = urllib.request.Request(url, headers=_vps_headers())
+        return urllib.request.urlopen(req, timeout=120)
+    except Exception:
+        return None
+
+
+def _merged_sessions():
+    """Local sessions first (host=local), then the box's (host=vps, id namespaced).
+    Always ok:true; a `vps` block tells the frontend whether the box is
+    configured and currently reachable, so it can show the section as offline."""
+    res = terminal_manager.list_sessions()
+    out = []
+    for s in res.get("sessions", []):
+        s = dict(s)
+        s["host"] = "local"
+        out.append(s)
+
+    vps_info = {"enabled": _vps_enabled(), "online": False,
+                "host": urlparse(VPS_BASE).netloc if VPS_BASE else ""}
+    if _vps_enabled():
+        data = _vps_get("/api/terminal/sessions")
+        if data and data.get("ok"):
+            vps_info["online"] = True
+            for s in data.get("sessions", []):
+                s = dict(s)
+                s["realid"] = s.get("id", "")
+                s["id"] = SID_VPS_PREFIX + s.get("id", "")
+                s["host"] = "vps"
+                out.append(s)
+    return {"ok": True, "sessions": out, "vps": vps_info}
+
+
+def _merged_states():
+    """Local states, plus the box's states re-keyed under the vps: prefix."""
+    res = terminal_manager.all_states()
+    states = dict(res.get("states", {}))
+    if _vps_enabled():
+        data = _vps_get("/api/terminal/states")
+        if data and data.get("ok"):
+            for sid, st in (data.get("states") or {}).items():
+                states[SID_VPS_PREFIX + sid] = st
+    res["states"] = states
+    return res
 
 
 class TerminalHandler(BaseHTTPRequestHandler):
@@ -124,10 +290,10 @@ class TerminalHandler(BaseHTTPRequestHandler):
             self._stream_terminal()
             return
         if path == "/api/terminal/sessions":
-            self._json(200, terminal_manager.list_sessions())
+            self._json(200, _merged_sessions())
             return
         if path == "/api/terminal/states":
-            self._json(200, terminal_manager.all_states())
+            self._json(200, _merged_states())
             return
 
         self._json(404, {"error": "not found"})
@@ -157,6 +323,12 @@ class TerminalHandler(BaseHTTPRequestHandler):
         qs = parse_qs(urlparse(self.path).query)
         sid = qs.get("sid", [None])[0]
 
+        # A vps: sid streams from the box; we just relay its bytes.
+        host, real = _split_sid(sid)
+        if host == "vps":
+            self._stream_vps(real, sid)
+            return
+
         if not sid:
             result = terminal_manager.start_session()
             if not result.get("ok"):
@@ -182,6 +354,46 @@ class TerminalHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass  # client went away; the tmux session stays alive
 
+    def _stream_vps(self, real_id, full_sid):
+        """Relay the box's SSE stream for a vps: session straight through. The
+        box already emits the same data: lines the frontend parses (output,
+        replay, exit, ping); we forward them line by line so nothing buffers.
+        The upstream's own `session` event carries the box-local id, which the
+        frontend ignores, so no rewriting is needed."""
+        if not _vps_enabled():
+            self._json(404, {"error": "vps not configured"})
+            return
+        upstream = _vps_open_stream(real_id)
+        if upstream is None:
+            self._json(502, {"ok": False, "error": "vps stream unreachable"})
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Connection", "keep-alive")
+        self.end_headers()
+
+        try:
+            # Announce our namespaced id first (matches the local path's shape).
+            self.wfile.write(
+                f"data: {json.dumps({'type': 'session', 'sid': full_sid})}\n\n".encode())
+            self.wfile.flush()
+            for raw in upstream:  # HTTPResponse yields one SSE line at a time
+                self.wfile.write(raw)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # browser tab closed / switched away
+        except Exception:
+            pass  # box dropped the stream; the frontend reconnects on focus
+        finally:
+            try:
+                upstream.close()
+            except Exception:
+                pass
+
     # ── POST ──
 
     def do_POST(self):
@@ -190,9 +402,28 @@ class TerminalHandler(BaseHTTPRequestHandler):
         if data is None:
             return  # _read_json_body already sent a 400
 
+        # /start has no sid yet, so it routes on an explicit host field; every
+        # other control call routes on its sid's vps: prefix.
         if path == "/api/terminal/start":
+            if data.get("host") == "vps":
+                self._json(200, _vps_start(data.get("name")))
+                return
             self._json(200, terminal_manager.start_session(data.get("name")))
             return
+
+        host, real = _split_sid(data.get("sid", ""))
+        if host == "vps":
+            if not _vps_enabled():
+                self._json(404, {"ok": False, "error": "vps not configured"})
+                return
+            body = dict(data)
+            body["sid"] = real          # the box knows its own un-namespaced id
+            body.pop("host", None)
+            # uploads carry up to 5MB of base64 - give the hop more time.
+            tmo = 30 if path == "/api/terminal/upload" else None
+            self._json(200, _vps_post(path, body, timeout=tmo))
+            return
+
         if path == "/api/terminal/input":
             self._json(200, terminal_manager.write_session(
                 data.get("sid", ""), data.get("data", "")))
@@ -335,6 +566,11 @@ def main():
     parser.add_argument("--port", type=int, default=8722)
     parser.add_argument("--home", default=None,
                         help="directory new terminal sessions start in")
+    parser.add_argument("--vps-url", default=None,
+                        help="base url of the :3333 dashboard to aggregate "
+                             "(e.g. http://72.62.195.38:3333)")
+    parser.add_argument("--vps-token", default=None,
+                        help="dashboard Bearer token for --vps-url")
     parser.add_argument("--selftest", action="store_true",
                         help="round-trip a token through a real tmux shell, then exit")
     args = parser.parse_args()
@@ -346,6 +582,11 @@ def main():
 
     if args.selftest:
         sys.exit(_run_selftest())
+
+    # Resolve the optional VPS proxy (flags > env > mts-config.json vps block).
+    base, _tok = _load_vps_config(args.vps_url, args.vps_token)
+    if _vps_enabled():
+        print(f"Aggregating VPS sessions from {base}")
 
     _import_manager()
 

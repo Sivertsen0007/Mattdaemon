@@ -89,6 +89,19 @@
   .side-label{font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
     color:#54545a;padding:4px 6px 0;font-family:'JetBrains Mono',monospace}
   .sess-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+  /* in-list section divider - "This Mac" / "VPS" - splits local from remote */
+  .sess-section{display:flex;align-items:center;gap:7px;padding:10px 6px 3px;
+    font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+    color:#54545a;font-family:'JetBrains Mono',monospace;user-select:none}
+  .sess-section:first-child{padding-top:2px}
+  .sess-section .sec-host{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sess-section .sec-note{text-transform:none;letter-spacing:0;color:var(--stOffline);
+    font-weight:500;font-size:10px}
+  .sess-section .sec-add{flex:none;width:18px;height:18px;line-height:16px;text-align:center;
+    border:1px solid var(--border);border-radius:4px;color:var(--inkMute);cursor:pointer;
+    background:transparent;font-size:13px;padding:0}
+  .sess-section .sec-add:hover{border-color:#3a3a3f;color:var(--ink);background:#202023}
+  .sess-section .sec-add:disabled{opacity:.4;cursor:default}
   .sess{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:6px;cursor:pointer;
     border:1px solid transparent;color:var(--inkMute);font-size:13px;transition:.1s;font-family:'JetBrains Mono',monospace}
   .sess:hover{background:#17171a}
@@ -132,7 +145,6 @@
     <aside class="sidebar">
       <button class="btn-new" id="btnNew">+ New session</button>
 
-      <div class="side-label">Sessions</div>
       <div class="sess-list" id="sessList"></div>
 
       <div class="sess-count" id="sessCount">0 sessions</div>
@@ -203,8 +215,9 @@
   // stream are not destroyed when you switch away and back.
   //   panes[sid] = { term, fit, container, abort, connected, name, exited }
   const panes = {};
-  let sessions = [];      // last /sessions listing
+  let sessions = [];      // last /sessions listing (each carries host: 'local'|'vps')
   let states = {};        // last /states  (sid -> working|attention|idle|looping|offline)
+  let vpsInfo = { enabled: false, online: false, host: '' };  // from /sessions .vps
   let activeSid = null;
 
   // ── pane lifecycle ──────────────────────────────────────────────────────
@@ -366,44 +379,100 @@
   }
 
   let renaming = false;   // true while an inline rename is open - pauses re-render
+
+  // One session row. The id shown in the tag is the box-local one for a vps:
+  // session (s.realid), so it matches what you see on the :3333 dashboard.
+  function buildRow(s) {
+    const row = document.createElement('div');
+    row.className = 'sess' + (s.id === activeSid ? ' active' : '');
+    row.dataset.s = s.id;
+
+    const dot = document.createElement('span');
+    dot.className = 'sdot ' + dotClass(s.id);
+
+    const nm = document.createElement('span');
+    nm.className = 'sname';
+    nm.textContent = s.name;
+
+    const tag = document.createElement('span');
+    tag.className = 'stag';
+    tag.textContent = (s.realid || s.id).slice(0, 4);
+
+    row.appendChild(dot); row.appendChild(nm); row.appendChild(tag);
+
+    row.addEventListener('click', () => {
+      if (nm.getAttribute('contenteditable') === 'true') return;
+      switchTo(s.id);
+    });
+    // double-click the name to rename via POST /api/terminal/rename
+    nm.addEventListener('dblclick', ev => {
+      ev.stopPropagation();
+      startRename(nm, s);
+    });
+    // right-click anywhere on the row for the rename / close menu
+    row.addEventListener('contextmenu', ev => {
+      ev.preventDefault();
+      openCtx(ev.clientX, ev.clientY, nm, s);
+    });
+    return row;
+  }
+
+  // A "This Mac" / "VPS" divider. opts: {host, note, onAdd, addDisabled, addTitle}
+  function sectionHeader(label, opts) {
+    opts = opts || {};
+    const h = document.createElement('div');
+    h.className = 'sess-section';
+
+    const l = document.createElement('span');
+    l.className = 'sec-host';
+    l.textContent = label + (opts.host ? '  ·  ' + opts.host : '');
+    h.appendChild(l);
+
+    if (opts.note) {
+      const n = document.createElement('span');
+      n.className = 'sec-note';
+      n.textContent = opts.note;
+      h.appendChild(n);
+    }
+    if (opts.onAdd) {
+      const b = document.createElement('button');
+      b.className = 'sec-add';
+      b.textContent = '+';
+      b.title = opts.addTitle || 'New session';
+      b.disabled = !!opts.addDisabled;
+      b.addEventListener('click', ev => { ev.stopPropagation(); opts.onAdd(); });
+      h.appendChild(b);
+    }
+    return h;
+  }
+
   function renderSessions() {
     if (renaming) return;   // never tear down the list mid-edit (would drop focus)
     sessListEl.innerHTML = '';
-    for (const s of sessions) {
-      const row = document.createElement('div');
-      row.className = 'sess' + (s.id === activeSid ? ' active' : '');
-      row.dataset.s = s.id;
 
-      const dot = document.createElement('span');
-      dot.className = 'sdot ' + dotClass(s.id);
+    const localSessions = sessions.filter(s => s.host !== 'vps');
+    const vpsSessions   = sessions.filter(s => s.host === 'vps');
+    // Only split into sections once a VPS is in the picture; otherwise the list
+    // stays a flat local list, exactly as before.
+    const showSections  = vpsInfo.enabled || vpsSessions.length > 0;
 
-      const nm = document.createElement('span');
-      nm.className = 'sname';
-      nm.textContent = s.name;
+    if (showSections) sessListEl.appendChild(sectionHeader('This Mac'));
+    for (const s of localSessions) sessListEl.appendChild(buildRow(s));
 
-      const tag = document.createElement('span');
-      tag.className = 'stag';
-      tag.textContent = s.id.slice(0, 4);
-
-      row.appendChild(dot); row.appendChild(nm); row.appendChild(tag);
-
-      row.addEventListener('click', () => {
-        if (nm.getAttribute('contenteditable') === 'true') return;
-        switchTo(s.id);
-      });
-      // double-click the name to rename via POST /api/terminal/rename
-      nm.addEventListener('dblclick', ev => {
-        ev.stopPropagation();
-        startRename(nm, s);
-      });
-      // right-click anywhere on the row for the rename / close menu
-      row.addEventListener('contextmenu', ev => {
-        ev.preventDefault();
-        openCtx(ev.clientX, ev.clientY, nm, s);
-      });
-
-      sessListEl.appendChild(row);
+    if (showSections) {
+      let note = '';
+      if (vpsInfo.enabled && !vpsInfo.online) note = '(offline)';
+      else if (!vpsSessions.length) note = '(none)';
+      sessListEl.appendChild(sectionHeader('VPS', {
+        host: vpsInfo.host || '',
+        note: note,
+        onAdd: () => newSession('vps'),
+        addDisabled: !vpsInfo.online,
+        addTitle: 'New VPS session',
+      }));
+      for (const s of vpsSessions) sessListEl.appendChild(buildRow(s));
     }
+
     const running = sessions.filter(s => {
       const st = states[s.id];
       return st === 'working' || st === 'attention' || st === 'looping';
@@ -601,6 +670,7 @@
       const j = await r.json();
       if (!j.ok) return;
       sessions = j.sessions || [];
+      vpsInfo = j.vps || { enabled: false, online: false, host: '' };
     } catch { return; }
     // drop panes for sessions that no longer exist
     const live = new Set(sessions.map(s => s.id));
@@ -625,12 +695,16 @@
   }
 
   // ── new session ──────────────────────────────────────────────────────────
-  async function newSession() {
+  // host: 'vps' starts the session on the box (via the proxy); anything else
+  // starts it locally. The returned id is already namespaced by the server, so
+  // switchTo lands on the right pane either way.
+  async function newSession(host) {
     btnNew.disabled = true;
     try {
+      const body = host === 'vps' ? { host: 'vps' } : {};
       const r = await fetch('/api/terminal/start', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
+        body: JSON.stringify(body)
       });
       const j = await r.json();
       if (j.ok && j.session) {
@@ -639,7 +713,7 @@
       }
     } catch {} finally { btnNew.disabled = false; }
   }
-  btnNew.addEventListener('click', newSession);
+  btnNew.addEventListener('click', () => newSession());
 
   document.getElementById('btnReload').addEventListener('click', () => {
     const pane = panes[activeSid];
