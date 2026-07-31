@@ -52,7 +52,10 @@
   .modal{background:#161617;border:1px solid var(--border);border-radius:12px;padding:20px 20px 16px;
     width:340px;max-width:90vw;box-shadow:0 24px 70px rgba(0,0,0,.6);font-family:'JetBrains Mono',monospace}
   .modal-title{font-size:14px;font-weight:600;color:var(--ink);margin-bottom:9px}
-  .modal-msg{font-size:12px;color:var(--inkMute);line-height:1.55;margin-bottom:18px}
+  /* pre-line so a multi-line message (e.g. the uncommitted-file list on a
+     send-to-VPS confirm) keeps its line breaks */
+  .modal-msg{font-size:12px;color:var(--inkMute);line-height:1.55;margin-bottom:18px;
+    white-space:pre-line;max-height:46vh;overflow-y:auto}
   .modal-actions{display:flex;gap:8px;justify-content:flex-end}
   .modal-actions button{font-family:inherit;font-size:12px;padding:7px 14px;border-radius:6px;
     cursor:pointer;border:1px solid var(--border)}
@@ -167,6 +170,7 @@
 <!-- right-click menu for session rows -->
 <div class="ctx" id="ctxMenu">
   <button id="ctxRename"><span class="k">&#9998;</span> Rename</button>
+  <button id="ctxSend"><span class="k">&#8593;</span> Send to VPS</button>
   <div class="sep"></div>
   <button id="ctxClose" class="danger"><span class="k">&#10005;</span> Close session</button>
 </div>
@@ -520,6 +524,9 @@
 
   function openCtx(x, y, nm, s) {
     ctxTarget = { nm, s };
+    // Only a local session can be handed over, and only when the box answers.
+    document.getElementById('ctxSend').style.display =
+      (s.host !== 'vps' && vpsInfo.enabled && vpsInfo.online) ? '' : 'none';
     ctxMenu.style.left = x + 'px';
     ctxMenu.style.top = y + 'px';
     ctxMenu.classList.add('open');
@@ -542,6 +549,53 @@
       if (nm) startRename(nm, t.s);
     }, 0);
   });
+  // ── send a local session's work to the box ────────────────────────────────
+  // A process cannot move between machines, so this is a handoff: the local
+  // Claude writes a brief, and a fresh session on the box opens on that brief.
+  // The local session keeps running - nothing here closes it.
+  function sendToVps(s, confirm) {
+    toast(confirm ? 'Sending to VPS...'
+                  : 'Asking "' + s.name + '" for a handoff brief...');
+    fetch('/api/terminal/send-to-vps', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid: s.id, confirm: !!confirm })
+    }).then(r => r.json()).then(res => {
+      // Dirty working tree: the box has its own clone, so let the user decide.
+      if (res && res.needs_confirm) {
+        const shown = res.dirty.slice(0, 8).join('\n');
+        const more  = res.dirty_total > 8
+          ? '\n...and ' + (res.dirty_total - 8) + ' more' : '';
+        askConfirm(
+          'Uncommitted work in ' + res.cwd,
+          res.dirty_total + ' uncommitted path(s). The box works from its own '
+            + 'clone at ' + res.vps_cwd + ', so it will not see these unless you '
+            + 'commit and push first.\n\n' + shown + more,
+          'Send anyway',
+          () => sendToVps(s, true));
+        return;
+      }
+      if (!res || !res.ok) {
+        toast(res && res.error ? res.error : 'Send failed');
+        return;
+      }
+      if (res.warning) toast(res.warning);
+      else toast(res.briefed ? 'Handed over to the VPS'
+                             : 'Started on the VPS in ' + res.vps_cwd);
+      refreshSessions().then(() => { if (res.session) switchTo(res.session.id); });
+    }).catch(() => toast('Send failed'));
+  }
+
+  document.getElementById('ctxSend').addEventListener('click', () => {
+    const t = ctxTarget; closeCtx();
+    if (!t) return;
+    askConfirm('Send "' + t.s.name + '" to the VPS?',
+      'This session keeps running. It will be asked to write a handoff brief, '
+        + 'then a new session on the box opens on that brief. It can take a '
+        + 'minute if the session is mid-task.',
+      'Send to VPS',
+      () => sendToVps(t.s, false));
+  });
+
   document.getElementById('ctxClose').addEventListener('click', () => {
     const t = ctxTarget; closeCtx();
     if (!t) return;

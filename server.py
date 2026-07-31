@@ -33,8 +33,10 @@ Stdlib only. Requires tmux on PATH (terminal_manager talks to it).
 import argparse
 import json
 import os
+import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -103,25 +105,28 @@ def _load_vps_config(cli_url=None, cli_token=None):
     CLI flags > env (MTS_VPS_URL / MTS_VPS_TOKEN) > a "vps" block in either
     mts-config.json. A base url with no token (or vice versa) leaves the proxy
     off - both are required. Sets the module globals and returns (base, token)."""
-    global VPS_BASE, VPS_TOKEN
+    global VPS_BASE, VPS_TOKEN, VPS_PATH_MAP
 
     base = cli_url or os.environ.get("MTS_VPS_URL", "")
     token = cli_token or os.environ.get("MTS_VPS_TOKEN", "")
+    path_map = None
 
-    if not (base and token):
-        for path in _CONFIG_CANDIDATES:
-            try:
-                with open(path) as f:
-                    vps = (json.load(f) or {}).get("vps") or {}
-            except (OSError, ValueError):
-                continue
-            base = base or vps.get("base_url", "") or vps.get("url", "")
-            token = token or vps.get("token", "")
-            if base and token:
-                break
+    # Read every candidate: the path map may live in a different file than the
+    # credentials, so this cannot stop at the first one that has a base+token.
+    for path in _CONFIG_CANDIDATES:
+        try:
+            with open(path) as f:
+                vps = (json.load(f) or {}).get("vps") or {}
+        except (OSError, ValueError):
+            continue
+        base = base or vps.get("base_url", "") or vps.get("url", "")
+        token = token or vps.get("token", "")
+        if path_map is None and isinstance(vps.get("path_map"), dict):
+            path_map = vps["path_map"]
 
     VPS_BASE = (base or "").rstrip("/")
     VPS_TOKEN = token or ""
+    VPS_PATH_MAP = path_map if path_map is not None else dict(_DEFAULT_PATH_MAP)
     return VPS_BASE, VPS_TOKEN
 
 
@@ -227,6 +232,211 @@ def _merged_states():
                 states[SID_VPS_PREFIX + sid] = st
     res["states"] = states
     return res
+
+
+# ── Send a local session to the box ────────────────────────────────────────
+# A running process cannot be moved between machines - its memory, fds and tty
+# are Mac-local - so "send to VPS" is a *handoff*, not a migration: the local
+# Claude writes a brief of what it is doing, and a fresh session on the box is
+# started with that brief as its opening task. The local session is left alone.
+
+# Local path prefix -> box path prefix; longest match wins. Override with a
+# "path_map" key in the vps config block when another repo gets a box clone.
+VPS_PATH_MAP = {}
+_DEFAULT_PATH_MAP = {"~/Documents/AI-Hub": "/home/aihub/AI-Hub"}
+
+# The brief goes to a temp path, never into the repo - a file in the working
+# tree would show up in git status and could be committed by accident.
+BRIEF_DIR = "/tmp"
+BRIEF_TIMEOUT = 300     # the session may be mid-task; the typed prompt queues
+BRIEF_POLL = 2
+_HEREDOC_EOF = "MTS_HANDOFF_EOF"
+
+
+def _map_path_to_vps(local_path):
+    """Translate a Mac path to its counterpart on the box, or None if the
+    directory has no known equivalent there (better to refuse than to drop the
+    session into an unrelated folder)."""
+    if not local_path:
+        return None
+    best_local, best_remote = "", None
+    for loc, rem in VPS_PATH_MAP.items():
+        loc = os.path.expanduser(loc).rstrip("/")
+        if (local_path == loc or local_path.startswith(loc + "/")) \
+                and len(loc) > len(best_local):
+            best_local, best_remote = loc, rem.rstrip("/")
+    if best_remote is None:
+        return None
+    return best_remote + local_path[len(best_local):]
+
+
+def _git_dirty(cwd):
+    """Uncommitted paths in cwd's repo, or [] when clean / not a repo. The box
+    works from its own clone, so a dirty tree means the two would disagree."""
+    try:
+        r = subprocess.run(["git", "status", "--porcelain"], cwd=cwd,
+                           capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if r.returncode != 0:
+        return []
+    return [ln for ln in (r.stdout or "").splitlines() if ln.strip()]
+
+
+def _brief_path(sid):
+    return os.path.join(BRIEF_DIR, "mts-handoff-%s.md" % sid)
+
+
+# Claude Code treats a burst of input as a paste, and a carriage return inside
+# a paste is a line break, not "submit" - send the text and the Enter together
+# and the prompt just sits in the input box forever. So the return goes as its
+# own keystroke, after a beat. (Deliberately no Ctrl-C to clear a stray draft
+# first: on an idle Claude a double Ctrl-C quits it, which would destroy the
+# very session we are trying to hand over.)
+_SUBMIT_DELAY = 0.9
+
+
+def _request_brief(sid, path, vps_cwd):
+    """Type the brief request into the local session, then submit it."""
+    prompt = (
+        "Write a handoff brief to %s so another Claude on our VPS can continue "
+        "this exact work: what we are building, what is done, what is next, the "
+        "key files with their paths, and any decisions or gotchas it must know. "
+        "That machine has the repo at %s instead of the local path. Do not ask "
+        "me anything first - if this session has little context, say so in the "
+        "file instead of asking. Write the file, then reply DONE."
+        % (path, vps_cwd)
+    )
+    res = terminal_manager.write_session(sid, prompt)
+    if not (res and res.get("ok")):
+        return res
+    time.sleep(_SUBMIT_DELAY)
+    return terminal_manager.write_session(sid, "\r")
+
+
+def _await_brief(path, timeout=BRIEF_TIMEOUT):
+    """Wait for the brief to appear and stop growing, so a half-written file is
+    never shipped. Returns its text, or None on timeout."""
+    deadline = time.time() + timeout
+    last_size, stable = -1, 0
+    while time.time() < deadline:
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            time.sleep(BRIEF_POLL)
+            continue
+        stable = stable + 1 if size == last_size and size > 0 else 0
+        last_size = size
+        if stable >= 2:
+            try:
+                with open(path, encoding="utf-8", errors="replace") as f:
+                    text = f.read().strip()
+                return text or None
+            except OSError:
+                return None
+        time.sleep(BRIEF_POLL)
+    return None
+
+
+def _seed_vps_session(vps_real_id, vps_cwd, brief):
+    """Plant the brief on the box and open Claude on it.
+
+    The brief is delivered through a quoted heredoc, so the shell performs no
+    expansion at all and arbitrary prose - backticks, $, quotes - travels
+    intact. A line equal to the delimiter would end it early, so those are
+    defanged first."""
+    safe = "\n".join(
+        ("  " + ln) if ln.strip() == _HEREDOC_EOF else ln
+        for ln in brief.splitlines()
+    )
+    remote = "/tmp/mts-handoff-%s.md" % vps_real_id
+    script = (
+        "cd %s && cat > %s <<'%s'\n%s\n%s\n"
+        % (vps_cwd, remote, _HEREDOC_EOF, safe, _HEREDOC_EOF)
+    )
+    res = _vps_post("/api/terminal/input", {"sid": vps_real_id, "data": script},
+                    timeout=30)
+    if not (res and res.get("ok")):
+        return {"ok": False, "error": "could not write the brief on the box"}
+    # Separate call: the heredoc must be closed before the next command is fed.
+    # Read the brief into a variable and delete the file before Claude starts,
+    # so a handoff never leaves project context lying around in the box's /tmp.
+    time.sleep(0.6)
+    return _vps_post(
+        "/api/terminal/input",
+        {"sid": vps_real_id,
+         "data": 'B="$(cat %s)"; rm -f %s; claude "$B"\r' % (remote, remote)},
+        timeout=30)
+
+
+def send_local_to_vps(sid, confirm=False, name=None):
+    """Hand a local session's work over to a new session on the box."""
+    if not _vps_enabled():
+        return {"ok": False, "error": "vps not configured"}
+
+    sessions = {s["id"]: s for s in
+                terminal_manager.list_sessions().get("sessions", [])}
+    sess = sessions.get(sid)
+    if not sess:
+        return {"ok": False, "error": "no such local session"}
+
+    cwd = terminal_manager.session_cwd(sid)
+    vps_cwd = _map_path_to_vps(cwd)
+    if not vps_cwd:
+        return {"ok": False, "error":
+                "no VPS path is mapped for %s - add one under vps.path_map"
+                % (cwd or "this session")}
+
+    dirty = _git_dirty(cwd)
+    if dirty and not confirm:
+        return {"ok": False, "needs_confirm": True, "cwd": cwd,
+                "vps_cwd": vps_cwd, "dirty": dirty[:40],
+                "dirty_total": len(dirty)}
+
+    # A plain shell has no conversation to hand over; only ask for a brief when
+    # Claude is actually running in the pane. Claude Code renames its process to
+    # its version number, so tmux reports the foreground command as e.g.
+    # "2.1.199" rather than "claude" - terminal_manager already knows that shape,
+    # so reuse its test instead of matching on the name.
+    cmd = (sess.get("cmd") or "").strip().lower()
+    running_claude = (cmd in terminal_manager._AMBIGUOUS_RUNTIME
+                      or terminal_manager._looks_like_version(cmd))
+    brief = None
+    if running_claude:
+        typed = _request_brief(sid, _brief_path(sid), vps_cwd)
+        if not (typed and typed.get("ok")):
+            return {"ok": False, "error": "could not prompt the local session"}
+        brief = _await_brief(_brief_path(sid))
+        if not brief:
+            return {"ok": False, "error":
+                    "the local session did not produce a brief within %ds - it "
+                    "may be mid-task or waiting on a permission prompt"
+                    % BRIEF_TIMEOUT}
+
+    started = _vps_start(name or ("%s (from Mac)" % sess.get("name", "session")))
+    if not (started and started.get("ok") and started.get("session")):
+        return {"ok": False, "error": "could not start a session on the box"}
+    new = started["session"]
+    real = new.get("realid") or ""
+
+    if brief:
+        seeded = _seed_vps_session(real, vps_cwd, brief)
+        if not (seeded and seeded.get("ok")):
+            # The session exists and is usable, so report it rather than
+            # stranding the user with a pane they cannot find.
+            return {"ok": True, "session": new, "vps_cwd": vps_cwd,
+                    "warning": "session started, but the brief did not land - "
+                               "it is at %s on this Mac" % _brief_path(sid)}
+        try:
+            os.remove(_brief_path(sid))
+        except OSError:
+            pass
+    else:
+        _vps_post("/api/terminal/input",
+                  {"sid": real, "data": "cd %s\r" % vps_cwd}, timeout=15)
+
+    return {"ok": True, "session": new, "vps_cwd": vps_cwd,
+            "briefed": bool(brief)}
 
 
 class TerminalHandler(BaseHTTPRequestHandler):
@@ -409,6 +619,20 @@ class TerminalHandler(BaseHTTPRequestHandler):
                 self._json(200, _vps_start(data.get("name")))
                 return
             self._json(200, terminal_manager.start_session(data.get("name")))
+            return
+
+        # Handing a local session over to the box is neither a local nor a
+        # proxied call - it drives both - so it is routed before the sid split.
+        # Slow by nature (it waits on the local Claude); ThreadingHTTPServer
+        # keeps that off the other requests.
+        if path == "/api/terminal/send-to-vps":
+            sid = data.get("sid", "")
+            if _split_sid(sid)[0] == "vps":
+                self._json(400, {"ok": False,
+                                 "error": "that session is already on the box"})
+                return
+            self._json(200, send_local_to_vps(
+                sid, confirm=bool(data.get("confirm")), name=data.get("name")))
             return
 
         host, real = _split_sid(data.get("sid", ""))

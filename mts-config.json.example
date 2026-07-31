@@ -3,8 +3,12 @@
   "port": 8722,
 
   "//vps": "Optional. When set, the box's :3333 terminal sessions show up in a 'VPS' section of the sidebar and can be driven from here. The token stays on this Mac - it is proxied server-side and never reaches the browser. Copy this file to mts-config.json (git-ignored) and fill in the real token.",
+  "//path_map": "Local folder -> its counterpart on the box, used by 'Send to VPS' in the session right-click menu. Longest match wins, and subfolders follow. A session in a folder with no mapping is refused rather than dropped somewhere unrelated, so add an entry per repo that is cloned on both machines.",
   "vps": {
     "base_url": "http://72.62.195.38:3333",
-    "token": "PUT_DASHBOARD_TOKEN_HERE"
+    "token": "PUT_DASHBOARD_TOKEN_HERE",
+    "path_map": {
+      "~/Documents/AI-Hub": "/home/aihub/AI-Hub"
+    }
   }
 }

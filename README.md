@@ -53,6 +53,34 @@ browser tab - reopen it and your shells, running processes, and scrollback are
 still there. They do **not** survive a full reboot: tmux is torn down when the
 machine restarts, so you start fresh after a reboot.
 
+## VPS sessions in the same window
+
+With a `vps` block in `mts-config.json` (see `mts-config.json.example`), the
+box's `:3333` terminal sessions appear in a **VPS** section of the sidebar
+alongside the local ones, and can be driven from here. The token is held by
+this server and proxied - it never reaches the browser. Each section has its
+own `+`, so a session can be started on either machine. Without the block, the
+app behaves exactly as local-only.
+
+## Send a session to the VPS
+
+Right-click a local session -> **Send to VPS**. A running process cannot be
+moved between machines, so this is a *handoff*, not a migration:
+
+1. The local Claude is asked to write a handoff brief - what is being built,
+   what is done, what is next, key files, gotchas.
+2. A new session starts on the box, `cd`s to the mapped folder, and opens
+   Claude on that brief.
+3. **The local session keeps running.** Nothing closes it.
+
+The brief travels through a quoted heredoc, so prose containing `$`, backticks
+or quotes arrives byte-identical. Folders are translated via `vps.path_map`; a
+session in an unmapped folder is refused rather than dropped somewhere
+unrelated. If the working tree is dirty you are shown what is uncommitted and
+asked to confirm first - the box has its own clone and will not see local
+changes until they are pushed. A session running a plain shell has no
+conversation to hand over, so it is simply reopened in the mapped folder.
+
 ## Change the working directory
 
 New terminal sessions start in the directory set by the `home` key in
