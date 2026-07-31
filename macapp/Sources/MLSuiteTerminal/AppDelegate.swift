@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         boundPort = port
 
+        buildMenu()
         startServer(script: serverScript, port: port)
         buildWindow()
 
@@ -196,6 +197,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             DispatchQueue.main.async(execute: ready)
         }
+    }
+
+    // MARK: - Menu
+
+    /// A menu bar is what maps Cmd-C/V/X/A to the cut:/copy:/paste:/selectAll:
+    /// actions in the responder chain. Without it those shortcuts do nothing in
+    /// the WKWebView - which is why pasting text (and pasting a screenshot into
+    /// the prompt) did not work at all.
+    private func buildMenu() {
+        let mainMenu = NSMenu()
+
+        // App menu
+        let appItem = NSMenuItem()
+        mainMenu.addItem(appItem)
+        let appMenu = NSMenu()
+        appItem.submenu = appMenu
+        appMenu.addItem(withTitle: "About Mattdaemon",
+                        action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+                        keyEquivalent: "")
+        appMenu.addItem(.separator())
+        appMenu.addItem(withTitle: "Hide Mattdaemon",
+                        action: #selector(NSApplication.hide(_:)), keyEquivalent: "h")
+        appMenu.addItem(withTitle: "Quit Mattdaemon",
+                        action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+
+        // Edit menu - the important one (clipboard shortcuts for the web view).
+        let editItem = NSMenuItem()
+        mainMenu.addItem(editItem)
+        let editMenu = NSMenu(title: "Edit")
+        editItem.submenu = editMenu
+        editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
+        editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All",
+                         action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+
+        NSApp.mainMenu = mainMenu
     }
 
     // MARK: - Window / web view

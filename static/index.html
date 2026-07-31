@@ -61,6 +61,17 @@
   .modal .btn-danger{background:var(--stAttention);border-color:var(--stAttention);color:#fff}
   .modal .btn-danger:hover{filter:brightness(1.12)}
 
+  /* ---- attach button + toast ---- */
+  .term-head .attach{font-family:'JetBrains Mono',monospace;font-size:11px;padding:4px 10px;
+    border-radius:6px;border:1px solid var(--border);background:transparent;color:var(--inkMute);cursor:pointer}
+  .term-head .attach:hover{background:#202023;color:var(--ink)}
+  .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:120;
+    background:#1c1c1f;border:1px solid var(--border);color:var(--ink);font-size:12px;padding:9px 14px;
+    border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.5);font-family:'JetBrains Mono',monospace;
+    opacity:0;transition:opacity .18s;pointer-events:none;max-width:70vw;text-align:center}
+  .toast.show{opacity:1}
+  .term.dragover{outline:2px dashed var(--stIdle);outline-offset:-6px}
+
   /* ---- body: sidebar + terminal ---- */
   .body{flex:1;display:flex;min-height:0}
 
@@ -131,6 +142,7 @@
     <!-- terminal -->
     <div class="term-wrap">
       <div class="term-head">
+        <button class="attach" id="btnAttach" title="Upload an image or file into this session (or paste / drop it)">&#8613; Attach</button>
         <span class="chip" id="termChip">&#9679; idle</span>
       </div>
       <div class="term" id="term">
@@ -158,6 +170,8 @@
     </div>
   </div>
 </div>
+
+<div class="toast" id="toast"></div>
 
 <script>
   // ─────────────────────────────────────────────────────────────────────────
@@ -505,6 +519,79 @@
     if (!confirmBackdrop.classList.contains('open')) return;
     if (ev.key === 'Escape') { ev.preventDefault(); closeConfirm(); }
     else if (ev.key === 'Enter') { ev.preventDefault(); const f = confirmOnOk; closeConfirm(); if (f) f(); }
+  });
+
+  // ── image / file upload: browser -> session (paste, drop, or Attach) ──────
+  // Uploads the bytes to the session's .uploads dir and types the returned path
+  // into the prompt, so Claude can read a file that only exists on your Mac.
+  // Mirrors the :3333 dashboard.
+  let toastTimer = null;
+  function toast(msg) {
+    const el = document.getElementById('toast');
+    el.textContent = msg; el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+  }
+  function sendToActive(text) {
+    if (!activeSid) return;
+    fetch('/api/terminal/input', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid: activeSid, data: text })
+    }).catch(() => {});
+  }
+  async function uploadBlob(blob, name) {
+    if (!activeSid) { toast('Open a session first'); return; }
+    if (!blob) return;
+    if (blob.size > 5 * 1024 * 1024) { toast('Too large (max 5MB): ' + (name || 'file')); return; }
+    toast('Uploading ' + (name || 'file') + '…');
+    let b64;
+    try {
+      b64 = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(String(r.result).split(',')[1] || '');
+        r.onerror = () => rej(new Error('read'));
+        r.readAsDataURL(blob);
+      });
+    } catch (e) { toast('Could not read file'); return; }
+    try {
+      const resp = await fetch('/api/terminal/upload', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sid: activeSid, name: name || 'upload', mime: blob.type || '', b64 })
+      });
+      const data = await resp.json();
+      if (data.ok) { sendToActive(data.path + ' '); toast('Attached: ' + data.name); }
+      else { toast('Upload failed: ' + (data.error || '?')); }
+    } catch (e) { toast('Upload error'); }
+  }
+  // Paste a screenshot -> upload; a plain-text paste falls through to the shell.
+  termHost.addEventListener('paste', e => {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    for (const it of items) {
+      if (it.type && it.type.indexOf('image/') === 0) {
+        const blob = it.getAsFile();
+        if (blob) { e.preventDefault(); uploadBlob(blob, 'paste.' + (it.type.split('/')[1] || 'png')); return; }
+      }
+    }
+  });
+  // Drag a file from Finder onto the terminal -> upload.
+  termHost.addEventListener('dragover', e => { e.preventDefault(); termHost.classList.add('dragover'); });
+  termHost.addEventListener('dragleave', () => termHost.classList.remove('dragover'));
+  termHost.addEventListener('drop', e => {
+    termHost.classList.remove('dragover');
+    const files = (e.dataTransfer && e.dataTransfer.files) || [];
+    if (files.length) { e.preventDefault(); for (const f of files) uploadBlob(f, f.name); }
+  });
+  // The Attach button -> native file picker.
+  document.getElementById('btnAttach').addEventListener('click', () => {
+    let input = document.getElementById('fileInput');
+    if (!input) {
+      input = document.createElement('input');
+      input.type = 'file'; input.id = 'fileInput'; input.multiple = true;
+      input.accept = 'image/*,.pdf,.txt,.csv,.md,.json'; input.style.display = 'none';
+      document.body.appendChild(input);
+    }
+    input.onchange = () => { for (const f of input.files) uploadBlob(f, f.name); input.value = ''; };
+    input.click();
   });
 
   // ── polling: sessions + states ───────────────────────────────────────────

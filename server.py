@@ -208,6 +208,11 @@ class TerminalHandler(BaseHTTPRequestHandler):
             self._json(200, terminal_manager.rename_session(
                 data.get("sid", ""), data.get("name", "")))
             return
+        if path == "/api/terminal/upload":
+            self._json(200, terminal_manager.save_upload(
+                data.get("sid", ""), data.get("name", ""),
+                data.get("mime", ""), data.get("b64", "")))
+            return
 
         self._json(404, {"error": "not found"})
 
