@@ -268,7 +268,15 @@ Two lessons are baked into that logic:
 ## The window
 
 - **Session wall** - 1 to 4 panes in a grid, manual ordering, and a *Saved for later*
-  folder for sessions you want to keep but not look at.
+  folder for sessions you want to keep but not look at. Each layout looks like its
+  icon in the picker: three panes is one big one on the left at full height with the
+  other two stacked beside it, not three of a size.
+- **Changing the layout changes only the layout.** Go from two panes to three and the
+  two you were looking at stay exactly where they are; the new pane waits, empty,
+  until you put something in it. It used to fill itself with the next unused session,
+  which both added one you had not asked for and left you to undo it if you wanted a
+  different one there. Narrowing keeps what it hides, so going back up finds the wall
+  as you left it.
 - **Pop-out windows** - drag a session out and it gets a real window, which can live
   on a second monitor. Same page, same server, `?solo=<sid>` - no second terminal
   implementation to keep in step. The shell is a tmux session and outlives any window

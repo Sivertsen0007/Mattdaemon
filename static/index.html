@@ -310,11 +310,19 @@
   .term.grid{display:grid;gap:8px;padding:8px}
   .term.grid[data-layout="1"]{grid-template-columns:1fr;grid-template-rows:1fr}
   .term.grid[data-layout="2"]{grid-template-columns:1fr 1fr;grid-template-rows:1fr}
+  /* One big pane on the left, full height, with the other two stacked beside
+     it - the shape the picker's icon draws.
+     Addressed by data-i, NOT :nth-child. The placeholder ("No session - create
+     one to begin") is a permanent child of this grid and is only ever hidden,
+     never removed, so it holds child slot 1 for ever: :nth-child(1) matched
+     nothing, and every tile was addressed as the one before it. The wall came
+     out inside out - first session in the small top-right, second below it, and
+     the third auto-placed into the top-left cell with the bottom-left empty. */
   .term.grid[data-layout="3"]{grid-template-columns:1.4fr 1fr;grid-template-rows:1fr 1fr;
     grid-template-areas:"a b" "a c"}
-  .term.grid[data-layout="3"] .tile:nth-child(1){grid-area:a}
-  .term.grid[data-layout="3"] .tile:nth-child(2){grid-area:b}
-  .term.grid[data-layout="3"] .tile:nth-child(3){grid-area:c}
+  .term.grid[data-layout="3"] .tile[data-i="0"]{grid-area:a}
+  .term.grid[data-layout="3"] .tile[data-i="1"]{grid-area:b}
+  .term.grid[data-layout="3"] .tile[data-i="2"]{grid-area:c}
   .term.grid[data-layout="4"]{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
 
   .tile{min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--surface);
@@ -1378,24 +1386,25 @@
   /// Growing the wall fills the new panes with sessions that are not on screen
   /// yet, so switching to a four-up does something useful instead of showing
   /// three empty boxes.
+  /// Change how many panes are on screen, and change nothing else.
+  ///
+  /// A new pane is left empty on purpose. It used to fill itself with the next
+  /// unused session, which meant going from two panes to three both added a
+  /// session you had not asked for and, if you wanted a different one there,
+  /// left you to undo it first. Widening the wall is a statement about the wall,
+  /// not about which sessions you want in it - so the ones already up stay
+  /// exactly where they are, and the new pane says "Drop a session here" until
+  /// you pick one. Clicking a session in the sidebar still lands in the first
+  /// free pane, so filling it is one click either way.
+  ///
+  /// Narrowing keeps the sids of the panes it hides, because `tiles` is always
+  /// four long: go back up and the wall is as you left it.
   function setLayout(n) {
     if (![1, 2, 3, 4].includes(n)) return;
     layout = n;
-    for (let i = 0; i < layout; i++) {
-      if (tiles[i]) continue;
-      const next = orderedSessions().find(
-        s => !tiles.includes(s.id) && !popped.has(s.id));
-      tiles[i] = next ? next.id : null;
-    }
     if (focused >= layout) focused = layout - 1;
     saveLayout();
     render();
-  }
-
-  /// Every session in the order the sidebar draws them, local before VPS.
-  function orderedSessions() {
-    const s = shownSections();
-    return [...s.local, ...s.vps];
   }
 
   // ── switching the active session ─────────────────────────────────────────
