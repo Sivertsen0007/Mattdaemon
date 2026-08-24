@@ -500,6 +500,11 @@ flowchart LR
         B4 --> B5["🎯 same identity.<br/>Grant kept."]
     end
 
+    %% Invisible link. With nothing joining them the two subgraphs have no order
+    %% to lay out by, and mermaid stacks them with "after" on top - which reads
+    %% the comparison backwards. This puts before on the left, after on the right.
+    A1 ~~~ B1
+
     style before fill:#fee2e2,stroke:#dc2626
     style after fill:#dcfce7,stroke:#16a34a
     style A6 fill:#dc2626,color:#fff,stroke:none
