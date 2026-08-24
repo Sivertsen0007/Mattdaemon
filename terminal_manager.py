@@ -166,7 +166,7 @@ def _list_sessions_raw():
     answered=False means tmux did not give us a usable answer, so the caller must
     not conclude anything - least of all that every session is gone.
     """
-    fmt = "#{session_name}\t#{session_created}\t#{window_width}\t#{window_height}\t#{@webname}\t#{@webplan}\t#{@webloop}\t#{pane_current_command}\t#{pane_pid}\t#{@webstate}\t#{@webfile}"
+    fmt = "#{session_name}\t#{session_created}\t#{window_width}\t#{window_height}\t#{@webname}\t#{@webplan}\t#{@webloop}\t#{pane_current_command}\t#{pane_pid}\t#{@webstate}\t#{@webfile}\t#{session_activity}"
     r = _tmux("list-sessions", "-F", fmt)
     if r.returncode != 0:
         # A dead server genuinely means zero sessions; anything else is unknown.
@@ -192,11 +192,15 @@ def _list_sessions_raw():
         pid = parts[8] if len(parts) > 8 else ""
         webstate = parts[9] if len(parts) > 9 else ""
         webfile = parts[10] if len(parts) > 10 else ""
+        # tmux stamps session_activity whenever the session produces output. It
+        # is what lets the status poll skip re-reading panes that cannot have
+        # changed - see _pane_signals.
+        activity = parts[11] if len(parts) > 11 else ""
         out.append({
             "id": sid, "name": name, "alive": True,
             "cols": cols, "rows": rows, "created_at": created, "plan": plan,
             "loop": loop, "cmd": cmd, "pid": pid, "webstate": webstate,
-            "webfile": webfile,
+            "webfile": webfile, "activity": activity,
         })
     out.sort(key=lambda s: s["created_at"])
     with _last_good_lock:
@@ -345,9 +349,15 @@ def list_sessions():
         with _last_good_lock:
             return {"ok": True, "sessions": list(_last_good_sessions), "stale": True}
     live = {s["id"] for s in sessions}
+    # Take the dead views out of the map under the lock, then tear them down
+    # outside it. _close_view terminates a tmux client and waits on it, and
+    # holding views_lock across that stalls every keystroke, resize and stream
+    # attach on the box for as long as the wait takes - a freeze that arrives
+    # exactly when a session ends, which is the worst possible moment.
     with views_lock:
-        for sid in [k for k in views if k not in live]:
-            _close_view(views.pop(sid))
+        dead = [views.pop(sid) for sid in [k for k in views if k not in live]]
+    for view in dead:
+        _close_view(view)
     return {"ok": True, "sessions": sessions}
 
 
@@ -413,6 +423,26 @@ _VERSION_RE = re.compile(r"^v?\d+(?:\.\d+)+$")
 
 def _looks_like_version(cmd):
     return bool(cmd and _VERSION_RE.match(cmd.strip()))
+
+
+# How much of the bottom of a pane counts as "what this session is doing or
+# asking right now". A permission box, a y/n, and Claude's "esc to interrupt"
+# spinner all sit within a few lines of the input; anything higher up is
+# transcript - already dealt with, or merely text that happens to contain the
+# words. Sized to cover a multi-line permission box plus the input and status
+# rows beneath it.
+#
+# This matters more on a Mac than on the box: the Claude Code hooks that stamp
+# @webstate are not installed here, so for local sessions the pane text is the
+# ONLY signal. Scanning the whole screen meant any transcript containing "(y/n)"
+# - documentation, a code block, an old answered prompt - painted the session
+# red until something scrolled it away.
+_PROMPT_TAIL_LINES = 20
+
+
+def _pane_tail(low):
+    """The live region of a captured pane: its last few non-blank-padded lines."""
+    return "\n".join(low.splitlines()[-_PROMPT_TAIL_LINES:])
 
 
 def _build_proc_tree():
@@ -489,26 +519,77 @@ def _parse_webstate(raw):
         return kind, 0.0
 
 
-def classify_session(sid, loop_raw="", cmd="", pane_pid="", proc_kids=None, webstate=""):
+# Reading a pane costs a `tmux capture-pane` subprocess, and the status poll runs
+# every few seconds for EVERY session: fourteen sessions was fourteen processes
+# spawned every three seconds, all day, on top of one `ps` over the whole
+# machine. Most of those reads answer a question that cannot have changed - a
+# session that has produced no output since the last poll shows the same screen.
+#
+# tmux already tracks that as session_activity, so the pane text is only re-read
+# when it moves. The cheap signals (foreground command, process subtree, hook
+# stamp) are still evaluated on every poll, so work that starts silently is
+# still caught within one poll.
+_pane_cache = {}                 # sid -> (activity, (interrupt, prompt))
+_pane_cache_lock = threading.Lock()
+
+
+def _pane_signals(sid, activity):
+    """(esc_to_interrupt, prompt_waiting) for a session, re-reading the pane only
+    when tmux says the session has produced output since we last looked.
+    Returns None when tmux says the session is gone."""
+    key = str(activity or "")
+    if key:
+        with _pane_cache_lock:
+            hit = _pane_cache.get(sid)
+        if hit and hit[0] == key:
+            return hit[1]
+
+    r = _tmux("capture-pane", "-p", "-t", _sname(sid))
+    if r.returncode != 0:
+        return None if _tmux_says_gone(r) else (False, False)
+    low = (r.stdout or "").lower()
+    tail = _pane_tail(low)
+    signals = (
+        "esc to interrupt" in tail,
+        ("do you want to" in tail
+         or "❯ 1. yes" in tail
+         or "y/n" in tail or "(y/n)" in tail or "[y/n]" in tail
+         or "press enter to continue" in tail),
+    )
+    if key:
+        with _pane_cache_lock:
+            _pane_cache[sid] = (key, signals)
+    return signals
+
+
+def _forget_pane_cache(live_ids):
+    with _pane_cache_lock:
+        for sid in [k for k in _pane_cache if k not in live_ids]:
+            _pane_cache.pop(sid, None)
+
+
+def classify_session(sid, loop_raw="", cmd="", pane_pid="", proc_kids=None,
+                     webstate="", activity=""):
     # webstate is the precise state stamped by Claude Code hooks (webterm-state.sh)
     # on the tmux session: attention (Notification/PermissionRequest), working
     # (PreToolUse/prompt), idle (Stop). It is preferred where it is reliable, but
     # the pane-text + process heuristics remain the floor so a session whose Claude
     # died mid-turn (never firing Stop) cannot be stranded by a stale stamp.
-    r = _tmux("capture-pane", "-p", "-t", _sname(sid))
-    if r.returncode != 0:
-        return "offline" if _tmux_says_gone(r) else "idle"
-    low = (r.stdout or "").lower()
+    # What a session is asking, or busy with, is at the BOTTOM of the pane -
+    # that is where a terminal puts what is happening now. Matching the whole
+    # visible screen meant an ALREADY ANSWERED permission box, or any transcript
+    # text containing "(y/n)", kept the dot red long after the session had moved
+    # on: you click it and it wants nothing. Only the live region counts.
+    signals = _pane_signals(sid, activity)
+    if signals is None:
+        return "offline"
+    interrupt, prompt_waiting = signals
     ws, ws_ts = _parse_webstate((webstate or "").strip().lower())
-    if "esc to interrupt" in low:
+    if interrupt:
         return "working"
-    # Needs you: a visible permission / y-n prompt, OR the hook caught a
-    # Notification / PermissionRequest (more reliable than scraping pane text).
-    if (ws == "attention"
-            or "do you want to" in low
-            or "❯ 1. yes" in low
-            or "y/n" in low or "(y/n)" in low or "[y/n]" in low
-            or "press enter to continue" in low):
+    # Needs you: a permission / y-n prompt in the live region, OR the hook caught
+    # a Notification / PermissionRequest (more reliable than scraping pane text).
+    if ws == "attention" or prompt_waiting:
         return "attention"
     # Background agents deliberately do NOT force yellow. The dot tracks the MAIN
     # conversation loop - "does this session need YOU?" - not whether every side
@@ -557,11 +638,13 @@ def all_states():
         with _last_good_lock:
             sessions = list(_last_good_sessions)
     kids = _build_proc_tree()
+    _forget_pane_cache({s["id"] for s in sessions})
     return {"ok": True,
             "states": {s["id"]: classify_session(s["id"], s.get("loop", ""),
                                                  s.get("cmd", ""),
                                                  s.get("pid", ""), kids,
-                                                 s.get("webstate", ""))
+                                                 s.get("webstate", ""),
+                                                 s.get("activity", ""))
                        for s in sessions},
             "plans": {s["id"]: s.get("plan", "") for s in sessions},
             "files": {s["id"]: s.get("webfile", "") for s in sessions},
@@ -686,9 +769,11 @@ def start_session(name=None):
 
     sid = uuid.uuid4().hex[:12]
     if name is None:
-        # Default sessions are named after the project: the first is "AI-Hub",
-        # then "AI-Hub 2", "AI-Hub 3"... (the bare name counts as 1).
-        base = "AI-Hub"
+        # Default sessions are named after the folder they open in: for
+        # ~/code/Ledger the first is "Ledger", then "Ledger 2", "Ledger 3"...
+        # (the bare name counts as 1). Read from START_DIR rather than fixed at
+        # import, because the folder can be changed from the settings panel.
+        base = os.path.basename(START_DIR.rstrip(os.sep)) or "Session"
         existing = []
         for s in _tmux_sessions():
             nm = s["name"]
@@ -731,6 +816,34 @@ def stop_session(sid):
         _close_view(view)
     _tmux("kill-session", "-t", _sname(sid))
     return {"ok": True}
+
+
+def view_stats():
+    """What this process is actually holding open.
+
+    A terminal app that goes sticky after hours of use is nearly always holding
+    something it should have let go of - a view whose tmux client died, a
+    subscriber queue nobody drains, a reader thread that outlived its fd. None of
+    that is visible from the outside, which is what makes such a bug a matter of
+    opinion. This makes it a number.
+    """
+    with views_lock:
+        views_now = list(views.values())
+    subs = 0
+    dead = 0
+    for v in views_now:
+        with v.subscribers_lock:
+            subs += len(v.subscribers)
+        if not v.alive:
+            dead += 1
+    return {
+        "views": len(views_now),
+        "dead_views": dead,
+        "subscribers": subs,
+        "threads": threading.active_count(),
+        "pane_cache": len(_pane_cache),
+        "size_reports": sum(len(v) for v in _size_reports.values()),
+    }
 
 
 def stop_all():
@@ -778,22 +891,32 @@ def write_session(sid, data):
 # just shows empty space on the right). Each browser reports its size on fit and
 # on a ~1.5s heartbeat; a report older than SIZE_TTL is dropped, so when a viewer
 # leaves the window grows back to whoever remains.
-_size_reports = {}            # sid -> list of (cols, rows, ts)
+#
+# Reports are keyed BY VIEWER so a viewer's new size replaces its own previous
+# one. Keyed only by arrival, one viewer that shrinks and grows back inside the
+# TTL competes with itself: min() keeps the width it no longer has, and since
+# nothing re-evaluates until the next report arrives, the window stays clamped
+# there indefinitely. That is a terminal stuck at half the window with output
+# dropping off the right-hand edge, curable only by restarting the process that
+# holds these dicts. A viewer that stops reporting still ages out, so the window
+# still grows back when one leaves.
+_size_reports = {}            # sid -> {viewer: (cols, rows, ts)}
 _applied_size = {}            # sid -> (cols, rows) currently pushed to the view
 _size_lock = threading.Lock()
 SIZE_TTL = 6.0
 
-def resize_session(sid, cols, rows):
+def resize_session(sid, cols, rows, viewer=""):
     """Resize a session, sizing to the smallest live viewer (see note above)."""
     cols = max(1, int(cols))
     rows = max(1, int(rows))
     now = time.time()
     with _size_lock:
-        live = [e for e in _size_reports.get(sid, []) if now - e[2] < SIZE_TTL]
-        live.append((cols, rows, now))
+        live = {v: e for v, e in (_size_reports.get(sid) or {}).items()
+                if now - e[2] < SIZE_TTL}
+        live[viewer or "anon"] = (cols, rows, now)
         _size_reports[sid] = live
-        tcols = min(e[0] for e in live)
-        trows = min(e[1] for e in live)
+        tcols = min(e[0] for e in live.values())
+        trows = min(e[1] for e in live.values())
         if _applied_size.get(sid) == (tcols, trows):
             return {"ok": True, "cols": tcols, "rows": trows, "unchanged": True}
 
@@ -817,8 +940,15 @@ def resize_session(sid, cols, rows):
     return {"ok": True, "cols": tcols, "rows": trows}
 
 
-def stream_session_output(sid):
-    """Generator yielding SSE events for a session.
+def iter_session_events(sid):
+    """Generator yielding a session's events as dicts.
+
+    Split out from stream_session_output so the same event source can feed two
+    very different endpoints: one session on its own connection, and N sessions
+    merged onto one (see server.py's stream-multi, which the grid needs because
+    a browser gives an origin about six connections and a wall of panes would
+    spend the lot on output alone). Formatting lives with the endpoint; this
+    yields the events themselves.
 
     Sends scrollback replay first, then live output. On reconnect after a server
     restart the view is re-attached here and tmux redraws the full screen.
@@ -833,7 +963,7 @@ def stream_session_output(sid):
     That is a permanently frozen terminal with a blinking cursor.
     """
     if not _session_exists(sid):
-        yield f"data: {json.dumps({'type': 'error', 'error': 'session not found'})}\n\n"
+        yield {"type": "error", "error": "session not found"}
         return
 
     ping_interval = 15
@@ -844,7 +974,7 @@ def stream_session_output(sid):
         view = _get_view(sid)
         if not view:
             # _get_view only fails to attach when tmux no longer has the session.
-            yield f"data: {json.dumps({'type': 'exit', 'code': 0})}\n\n"
+            yield {"type": "exit", "code": 0}
             return
 
         # Replay scrollback once, on first attach. On a re-attach tmux redraws
@@ -861,7 +991,7 @@ def stream_session_output(sid):
             with view.scrollback_lock:
                 if view.scrollback:
                     encoded = base64.b64encode(bytes(view.scrollback)).decode("ascii")
-                    yield f"data: {json.dumps({'type': 'replay', 'data': encoded})}\n\n"
+                    yield {"type": "replay", "data": encoded}
 
         q = view.subscribe()
         try:
@@ -877,18 +1007,18 @@ def stream_session_output(sid):
                         break  # re-attach on the outer loop
                     last_ping += 1
                     if last_ping >= ping_interval:
-                        yield f"data: {json.dumps({'type': 'ping'})}\n\n"
+                        yield {"type": "ping"}
                         last_ping = 0
                     # The shell is gone only if tmux says so - a dead view just
                     # means our client dropped, and reconnecting will re-attach.
                     if not _session_exists(sid):
-                        yield f"data: {json.dumps({'type': 'exit', 'code': 0})}\n\n"
+                        yield {"type": "exit", "code": 0}
                         return
                     continue
 
                 if event.get("type") == "detached":
                     break  # the view died; re-attach on the outer loop
-                yield f"data: {json.dumps(event)}\n\n"
+                yield event
                 last_ping = 0
                 if event.get("type") == "exit":
                     return
@@ -901,7 +1031,56 @@ def stream_session_output(sid):
         time.sleep(0.25)
 
 
+def stream_session_output(sid):
+    """One session's events as SSE text - the single-pane endpoint.
+
+    Kept as its own entry point because a solo stream needs no sid on the wire:
+    the connection *is* the session. The grid's merged stream tags every event
+    instead; see server.py.
+    """
+    for event in iter_session_events(sid):
+        yield f"data: {json.dumps(event)}\n\n"
+
+
 # ── Internal helpers ──
+
+# How far past the cut point we will look for a clean place to start. An escape
+# sequence is a handful of bytes; anything longer than this is not one, and
+# scanning further would throw away real output for nothing.
+_TRIM_SCAN = 512
+
+
+def _trim_scrollback(buf, limit):
+    """Drop the oldest bytes down to `limit`, cutting only where a terminal can
+    safely start reading.
+
+    A blind `del buf[:n]` can slice an escape sequence in half. The tail then
+    leads the buffer, and since this buffer is replayed verbatim to a fresh
+    xterm on every reconnect, that terminal is handed the middle of a sequence:
+    it prints the remainder as literal text ("5;180m" and friends) and its
+    parser is left in the wrong state, so everything after it renders shifted
+    and overlapping. That is the corrupted screen you get after a session has
+    been running long enough to wrap this buffer - and only after a reconnect,
+    which is what made it look random.
+
+    So: cut at `limit`, then walk forward to the next ESC, which is always a
+    valid place to begin. If there is no ESC nearby, the region is plain text
+    and any byte that is not a UTF-8 continuation will do.
+    """
+    excess = len(buf) - limit
+    if excess <= 0:
+        return
+    start = excess
+    stop = min(len(buf), start + _TRIM_SCAN)
+    esc = buf.find(b"\x1b", start, stop)
+    if esc != -1:
+        start = esc
+    else:
+        # No sequence in reach: just do not start inside a multi-byte character.
+        while start < stop and (buf[start] & 0xC0) == 0x80:
+            start += 1
+    del buf[:start]
+
 
 def _reader_loop(view):
     """One reader thread per view: PTY → scrollback + broadcast.
@@ -937,7 +1116,7 @@ def _reader_loop(view):
             with view.scrollback_lock:
                 view.scrollback.extend(data)
                 if len(view.scrollback) > SCROLLBACK_MAX:
-                    del view.scrollback[:len(view.scrollback) - SCROLLBACK_MAX]
+                    _trim_scrollback(view.scrollback, SCROLLBACK_MAX)
 
             view.broadcast({"type": "output", "data": base64.b64encode(data).decode("ascii")})
     finally:
@@ -962,9 +1141,16 @@ def _close_view(view):
     if view.process and view.process.poll() is None:
         view.process.terminate()
         try:
-            view.process.wait(timeout=5)
+            # A tmux client that has not gone in a second is not going to; it is
+            # detached from a session that no longer exists. Waiting five was
+            # five seconds of a stalled close.
+            view.process.wait(timeout=1)
         except subprocess.TimeoutExpired:
             view.process.kill()
+            try:
+                view.process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass   # reaped by the OS; never block the caller on it
 
     if fd is not None:
         try:

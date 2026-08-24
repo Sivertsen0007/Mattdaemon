@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mattdaemon - multi-session mockup</title>
+<style>
+  :root{
+    --bg:#0b0b0c; --surface:#151517; --surface2:#101012; --border:#242427;
+    --ink:#f2f2f3; --inkMute:#8a8a90; --inkDim:#5a5a60;
+    --stIdle:#22c55e; --stWorking:#eab308; --stAttention:#ef4444; --stOffline:#8a8a90;
+    --mono:'JetBrains Mono','SF Mono',Menlo,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+
+  /* Same scrollbar treatment as the app: a thin dim thumb, no track, no arrows.
+     The macOS default is a bright slab that reads as content on a dark pane. */
+  *{scrollbar-width:thin;scrollbar-color:#2a2a2f transparent}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:#26262b;border-radius:6px;
+    border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:#3c3c44;border:2px solid transparent;
+    background-clip:content-box}
+  ::-webkit-scrollbar-corner{background:transparent}
+
+  html,body{height:100%;overflow:hidden}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Inter',system-ui,sans-serif;
+    background:var(--bg);color:var(--ink);font-size:13px}
+
+  .app{height:100vh;display:flex;flex-direction:column}
+
+  /* top bar - layout picker */
+  .bar{flex:none;height:46px;display:flex;align-items:center;gap:14px;padding:0 14px;
+    border-bottom:1px solid var(--border);background:var(--surface2)}
+  .brand{display:flex;align-items:center;gap:9px;font-family:var(--mono);font-size:12.5px;font-weight:600}
+  .brand .m{width:22px;height:22px;border-radius:6px;background:#f2f2f3;color:#0b0b0c;
+    display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px}
+  .mock{font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--inkDim);
+    border:1px solid var(--border);border-radius:4px;padding:2px 6px;font-family:var(--mono)}
+
+  .layouts{display:flex;gap:5px;margin-left:8px}
+  .lay{width:34px;height:26px;border:1px solid var(--border);border-radius:6px;background:transparent;
+    cursor:pointer;display:flex;padding:3px;gap:2px}
+  .lay:hover{border-color:#3a3a3f;background:#1a1a1d}
+  .lay.on{border-color:#f2f2f3;background:#202023}
+  .lay i{display:block;background:var(--inkDim);border-radius:1px;flex:1}
+  .lay.on i{background:var(--ink)}
+  .lay .col{display:flex;flex-direction:column;gap:2px;flex:1}
+
+  .bar .spacer{flex:1}
+  .bar .hint{font-family:var(--mono);font-size:11px;color:var(--inkDim)}
+  .bar button.txt{background:transparent;border:1px solid var(--border);border-radius:6px;
+    color:var(--inkMute);font-family:var(--mono);font-size:11.5px;padding:5px 10px;cursor:pointer}
+  .bar button.txt:hover{background:#202023;color:var(--ink)}
+
+  /* drag a session up here to give it its own window - the mock of dragging a
+     session out of the app entirely, which a web page cannot detect for real */
+  .dropzone{display:flex;align-items:center;gap:7px;border:1px dashed #303035;border-radius:7px;
+    padding:5px 11px;font-family:var(--mono);font-size:11px;color:var(--inkDim);
+    transition:.12s;white-space:nowrap}
+  .dropzone.armed{border-color:#45454b;color:var(--inkMute)}
+  .dropzone.over{border-color:var(--stIdle);color:var(--ink);background:#12210f}
+
+  .body{flex:1;display:flex;min-height:0}
+
+  /* sidebar */
+  .sidebar{width:222px;flex:none;background:var(--surface2);border-right:1px solid var(--border);
+    display:flex;flex-direction:column;padding:11px 10px;gap:8px;min-height:0}
+  .side-label{font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
+    color:#54545a;padding:6px 6px 2px;font-family:var(--mono)}
+  .list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+  .sess{display:flex;align-items:center;gap:8px;padding:8px 9px;border-radius:6px;cursor:grab;
+    border:1px solid transparent;color:var(--inkMute);font-size:12.5px;font-family:var(--mono)}
+  .sess:hover{background:#17171a}
+  .sess.placed{color:var(--ink);background:#1a1a1d;border-color:#2c2c31}
+  .sess.focused{background:#1e1e21;border-color:#4a4a52;color:var(--ink)}
+  .sess.dragging{opacity:.4}
+  /* where the row would land if you let go now */
+  .sess.drop-before{box-shadow:inset 0 2px 0 var(--ink)}
+  .sess.drop-after{box-shadow:inset 0 -2px 0 var(--ink)}
+  .sess .grip{flex:none;width:9px;color:#3a3a3f;font-size:11px;line-height:1;letter-spacing:-1px}
+  .sess:hover .grip{color:var(--inkDim)}
+  .sess .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .sess .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sess .where{font-size:9.5px;color:var(--inkDim);border:1px solid var(--border);border-radius:4px;
+    padding:1px 5px;letter-spacing:.04em}
+  .dot.idle{background:var(--stIdle)} .dot.working{background:var(--stWorking);animation:p 1.4s infinite}
+  .dot.attention{background:var(--stAttention);animation:p 1s infinite} .dot.offline{background:var(--stOffline)}
+  @keyframes p{0%,100%{opacity:1}50%{opacity:.3}}
+  .side-foot{font-family:var(--mono);font-size:10.5px;color:var(--inkDim);line-height:1.6;
+    border-top:1px solid var(--border);padding-top:9px}
+
+  /* grid of panes */
+  .grid{flex:1;min-width:0;display:grid;gap:8px;padding:8px;background:var(--bg)}
+  .grid[data-layout="1"]{grid-template-columns:1fr;grid-template-rows:1fr}
+  .grid[data-layout="2"]{grid-template-columns:1fr 1fr;grid-template-rows:1fr}
+  .grid[data-layout="3"]{grid-template-columns:1.4fr 1fr;grid-template-rows:1fr 1fr;
+    grid-template-areas:"a b" "a c"}
+  .grid[data-layout="4"]{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+  .grid[data-layout="3"] .tile:nth-child(1){grid-area:a}
+  .grid[data-layout="3"] .tile:nth-child(2){grid-area:b}
+  .grid[data-layout="3"] .tile:nth-child(3){grid-area:c}
+
+  .tile{min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--surface);
+    border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  .tile.focused{border-color:#5b5b64;box-shadow:0 0 0 1px #5b5b64}
+  .tile.dragover{border-color:var(--stIdle);box-shadow:0 0 0 1px var(--stIdle)}
+  .tile-head{flex:none;height:32px;display:flex;align-items:center;gap:8px;padding:0 8px 0 11px;
+    border-bottom:1px solid var(--border);background:var(--surface2);font-family:var(--mono);font-size:11.5px}
+  .tile-head .dot{width:7px;height:7px;border-radius:50%;flex:none}
+  .tile-head .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+  .tile-head .key{color:var(--inkDim);font-size:10px;border:1px solid var(--border);
+    border-radius:4px;padding:1px 5px}
+  .tile-head button{background:transparent;border:1px solid transparent;border-radius:5px;
+    color:var(--inkDim);cursor:pointer;font-size:11px;padding:3px 6px;font-family:var(--mono)}
+  .tile-head button:hover{background:#202023;color:var(--ink);border-color:var(--border)}
+  .tile-body{flex:1;min-height:0;overflow-y:auto;padding:10px 12px;font-family:var(--mono);
+    font-size:11.5px;line-height:1.55;color:#c9c9cf;white-space:pre-wrap;word-break:break-word}
+  .tile-body .u{color:#f2f2f3}
+  .tile-body .g{color:#3ec97a}
+  .tile-body .y{color:#febc2e}
+  .tile-body .d{color:var(--inkDim)}
+  .caret{display:inline-block;width:7px;height:13px;background:var(--ink);vertical-align:-2px;
+    animation:blink 1.1s step-end infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;
+    color:var(--inkDim);font-family:var(--mono);font-size:11.5px;text-align:center;padding:16px}
+  .empty .big{font-size:20px;opacity:.5}
+
+  .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);z-index:50;
+    background:#1c1c1f;border:1px solid var(--border);color:var(--ink);font-size:12px;padding:9px 14px;
+    border-radius:8px;font-family:var(--mono);opacity:0;transition:opacity .18s;pointer-events:none}
+  .toast.show{opacity:1}
+
+  /* notes drawer */
+  .notes{position:fixed;right:0;top:0;bottom:0;width:400px;max-width:88vw;z-index:60;
+    background:var(--surface);border-left:1px solid var(--border);transform:translateX(100%);
+    transition:transform .22s;display:flex;flex-direction:column}
+  .notes.open{transform:none}
+  .notes h2{font-size:14px;padding:18px 20px 10px;font-weight:600}
+  .notes .inner{overflow-y:auto;padding:0 20px 24px;font-size:12.5px;line-height:1.65;color:var(--inkMute)}
+  .notes h3{color:var(--ink);font-size:12px;font-family:var(--mono);letter-spacing:.04em;
+    margin:18px 0 7px;text-transform:uppercase}
+  .notes p{margin-bottom:10px}
+  .notes b{color:var(--ink);font-weight:600}
+  .notes ul{margin:0 0 10px 16px}
+  .notes li{margin-bottom:6px}
+  .notes .x{position:absolute;top:14px;right:16px;background:transparent;border:1px solid var(--border);
+    border-radius:6px;color:var(--inkMute);cursor:pointer;padding:4px 8px;font-family:var(--mono);font-size:11px}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <div class="bar">
+    <div class="brand"><span class="m">M</span> Mattdaemon</div>
+    <span class="mock">mockup</span>
+
+    <div class="layouts" id="layouts">
+      <button class="lay" data-l="1" title="One session"><i></i></button>
+      <button class="lay" data-l="2" title="Two side by side"><i></i><i></i></button>
+      <button class="lay" data-l="3" title="One big + two"><i></i><span class="col"><i></i><i></i></span></button>
+      <button class="lay" data-l="4" title="Four up">
+        <span class="col"><i></i><i></i></span><span class="col"><i></i><i></i></span>
+      </button>
+    </div>
+
+    <span class="hint" id="hint">Drag a session from the left into a pane</span>
+    <div class="spacer"></div>
+    <div class="dropzone" id="popZone">&#8599; drop here for its own window</div>
+    <button class="txt" id="btnPopAll">Pop out focused &#8599;</button>
+    <button class="txt" id="btnNotes">How this would work</button>
+  </div>
+
+  <div class="body">
+    <aside class="sidebar">
+      <div class="side-label">This Mac</div>
+      <div class="list" id="listLocal"></div>
+      <div class="side-label">VPS &middot; 72.62.195.38</div>
+      <div class="list" id="listVps"></div>
+      <div class="side-foot">
+        &#8984;1-4 focus a pane<br>
+        &#8984;&#8679;O pop the focused one out<br>
+        drag a row onto a pane to load it
+      </div>
+    </aside>
+
+    <main class="grid" id="grid" data-layout="2"></main>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<aside class="notes" id="notes">
+  <button class="x" id="notesClose">close</button>
+  <h2>What this mockup is proposing</h2>
+  <div class="inner">
+    <p>Everything here is clickable. Switch layouts, drag sessions between panes,
+       and pop one out into a real window you can drag to another monitor.</p>
+
+    <h3>Why it is cheap to build</h3>
+    <p>The hard part is already done. Each session is its own <b>tmux</b> session
+       with its own output stream, and the app already keeps one live terminal per
+       session in memory - it just hides all but one. A grid is mostly a matter of
+       showing more than one at a time and letting each keep its own stream.</p>
+    <ul>
+      <li><b>Panes</b> - the pane objects already exist; today the app hides the
+          inactive ones. In a grid they stay visible, and each reports its own size
+          so tmux reflows to the pane rather than to the window.</li>
+      <li><b>Streams</b> - one open stream per visible pane instead of one per
+          window. Four panes is four streams, which is fine; the browser's ~6 per
+          origin limit is the ceiling, so a grid caps sensibly at four.</li>
+      <li><b>Pop-out</b> - a second native window in the app, pointed at the same
+          local server with the session id in the URL. Same page, one pane, no
+          sidebar. Close it and the session goes back into the grid.</li>
+    </ul>
+
+    <h3>What needs deciding</h3>
+    <ul>
+      <li><b>Focus</b> - one pane owns the keyboard. Clicking a pane focuses it,
+          and that is the one the sidebar marks.</li>
+      <li><b>Layouts per screen</b> - remember the layout, and which session sat
+          where, so reopening the app restores the wall you left.</li>
+      <li><b>Attention</b> - with four panes visible, a session needing you should
+          pulse its own pane border, not just the sidebar dot.</li>
+      <li><b>Pop-out lifetime</b> - a popped-out session keeps running if that
+          window closes; it simply returns to the grid.</li>
+    </ul>
+
+    <h3>Rough size</h3>
+    <p>Grid + drag-to-pane + focus: a day. Pop-out windows: another day, mostly
+       native window plumbing on the Swift side. Layout persistence: a couple of
+       hours. Nothing here needs a change to the server or to tmux.</p>
+  </div>
+</aside>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// A mockup, not the app: the sessions are fake and the output is scripted. What
+// is real is the interaction - layouts, drag-to-pane, focus, and pop-out windows
+// you can actually throw onto a second monitor.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SESSIONS = [
+  { id:'kb',      name:'KB',                host:'local', status:'idle',
+    script:['> ', 'Rebuilt the Bikini Atoll tab. 3 fixes verified.', '', '✱ Worked for 33s'] },
+  { id:'creator', name:'Creator',           host:'local', status:'idle',
+    script:['> pnpm test', '  ✓ creator/invite  (12)', '  ✓ creator/pages   (7)', ''] },
+  { id:'recover', name:'Recover plan',      host:'local', status:'working',
+    script:['> claude', 'Reading plans/recovery/plan.md ...'] },
+  { id:'social',  name:'Social app',        host:'local', status:'working',
+    script:['> claude', 'Checking Meta permissions ...'] },
+  { id:'crm',     name:'CRM',               host:'local', status:'idle',
+    script:['> git status -sb', '## main...origin/main', ''] },
+  { id:'mald',    name:'Maldives',          host:'vps',   status:'working',
+    script:['> claude', 'Generating September trip pages ...'] },
+  { id:'sem',     name:'SEM',               host:'vps',   status:'attention',
+    script:['> claude', '', 'Allow Bash(gcloud auth login)?', '  1. Yes   2. No'] },
+  { id:'fb',      name:'Facebook ads',      host:'vps',   status:'idle',
+    script:['> python3 upload.py', 'Uploaded 12 creatives.', ''] },
+];
+
+const CHATTER = {
+  working: ['Editing src/app/(dash)/page.tsx', 'Running the type-check ...',
+            '  ✓ no type errors', 'Reading 4 files', 'Writing the migration',
+            '✱ Worked for 12s', 'Committing: fix(pages): stable ordering'],
+  attention: ['(waiting for you)'],
+  idle: ['', ''],
+};
+
+const byId = id => SESSIONS.find(s => s.id === id);
+
+let layout = 2;
+let tiles = ['recover', 'mald', null, null];   // sid per pane, null = empty
+let focused = 0;
+const popped = new Map();                       // sid -> window
+
+// The sidebar's own order, independent of the panes. A row can be dragged to
+// two different places and they mean different things: onto another row it
+// reorders the list, onto a pane it opens there. Nothing about a session
+// changes by moving it in the list - it is a view, not a state.
+let order = SESSIONS.map(s => s.id);
+let dragSid = null;
+
+const inOrder = host => order.map(byId).filter(s => s && s.host === host);
+
+/// Move `sid` to sit just before (or after) `targetSid`. Refuses to move a
+/// session between the two sections: "This Mac" and "VPS" say which machine the
+/// shell is on, and dragging a row is not going to move a running process.
+function reorder(sid, targetSid, after) {
+  const a = byId(sid), b = byId(targetSid);
+  if (!a || !b || sid === targetSid) return false;
+  if (a.host !== b.host) { toast('That session lives on the other machine'); return false; }
+  order = order.filter(id => id !== sid);
+  const at = order.indexOf(targetSid);
+  order.splice(after ? at + 1 : at, 0, sid);
+  return true;
+}
+
+function clearDropMarks() {
+  for (const el of document.querySelectorAll('.sess'))
+    el.classList.remove('drop-before', 'drop-after');
+}
+
+const grid = document.getElementById('grid');
+const toastEl = document.getElementById('toast');
+
+function toast(msg) {
+  toastEl.textContent = msg;
+  toastEl.classList.add('show');
+  clearTimeout(toastEl._t);
+  toastEl._t = setTimeout(() => toastEl.classList.remove('show'), 2200);
+}
+
+// ── sidebar ──────────────────────────────────────────────────────────────────
+function renderSidebar() {
+  for (const [el, host] of [[document.getElementById('listLocal'), 'local'],
+                            [document.getElementById('listVps'), 'vps']]) {
+    el.innerHTML = '';
+    for (const s of inOrder(host)) {
+      const row = document.createElement('div');
+      const inTile = tiles.indexOf(s.id);
+      const isPopped = popped.has(s.id);
+      row.className = 'sess'
+        + (inTile >= 0 || isPopped ? ' placed' : '')
+        + (inTile === focused ? ' focused' : '');
+      row.draggable = true;
+      row.innerHTML = '<span class="grip">&#8942;&#8942;</span>'
+        + '<span class="dot ' + s.status + '"></span>'
+        + '<span class="nm"></span>'
+        + (isPopped ? '<span class="where">window</span>'
+           : inTile >= 0 ? '<span class="where">pane ' + (inTile + 1) + '</span>' : '');
+      row.querySelector('.nm').textContent = s.name;
+
+      row.addEventListener('dragstart', ev => {
+        dragSid = s.id;
+        ev.dataTransfer.setData('text/plain', s.id);
+        ev.dataTransfer.effectAllowed = 'move';
+        row.classList.add('dragging');
+        document.getElementById('popZone').classList.add('armed');
+      });
+      row.addEventListener('dragend', () => {
+        dragSid = null;
+        row.classList.remove('dragging');
+        clearDropMarks();
+        document.getElementById('popZone').classList.remove('armed', 'over');
+      });
+
+      // Dropping onto another row is a reorder. The line shows which side of it
+      // the row will land on, so letting go is never a guess.
+      row.addEventListener('dragover', ev => {
+        if (!dragSid || dragSid === s.id) return;
+        const src = byId(dragSid);
+        if (!src || src.host !== s.host) return;   // no cross-machine reorder
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = 'move';
+        const r = row.getBoundingClientRect();
+        const after = ev.clientY > r.top + r.height / 2;
+        clearDropMarks();
+        row.classList.add(after ? 'drop-after' : 'drop-before');
+      });
+      row.addEventListener('dragleave', () => row.classList.remove('drop-before', 'drop-after'));
+      row.addEventListener('drop', ev => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const r = row.getBoundingClientRect();
+        const after = ev.clientY > r.top + r.height / 2;
+        const moved = reorder(ev.dataTransfer.getData('text/plain') || dragSid, s.id, after);
+        clearDropMarks();
+        if (moved) render();
+      });
+
+      row.addEventListener('click', () => {
+        const at = tiles.indexOf(s.id);
+        if (at >= 0) { setFocus(at); return; }
+        place(s.id, firstFreeTile());
+      });
+      el.appendChild(row);
+    }
+  }
+}
+
+const firstFreeTile = () => {
+  const free = tiles.slice(0, layout).indexOf(null);
+  return free >= 0 ? free : focused;
+};
+
+// ── the grid ─────────────────────────────────────────────────────────────────
+function renderGrid() {
+  grid.dataset.layout = String(layout);
+  grid.innerHTML = '';
+  for (let i = 0; i < layout; i++) {
+    const sid = tiles[i];
+    const s = sid ? byId(sid) : null;
+    const tile = document.createElement('div');
+    tile.className = 'tile' + (i === focused ? ' focused' : '');
+    tile.dataset.i = String(i);
+
+    if (s) {
+      const head = document.createElement('div');
+      head.className = 'tile-head';
+      head.innerHTML = '<span class="dot ' + s.status + '"></span>'
+        + '<span class="nm"></span>'
+        + '<span class="key">&#8984;' + (i + 1) + '</span>'
+        + '<button data-act="pop" title="Open in its own window">&#8599; pop out</button>'
+        + '<button data-act="clear" title="Take it out of this pane">&#10005;</button>';
+      head.querySelector('.nm').textContent = s.name
+        + (s.host === 'vps' ? '  ·  vps' : '');
+      head.querySelector('[data-act="pop"]').addEventListener('click', ev => {
+        ev.stopPropagation(); popOut(sid);
+      });
+      head.querySelector('[data-act="clear"]').addEventListener('click', ev => {
+        ev.stopPropagation(); tiles[i] = null; render();
+      });
+      // dragging a pane's header moves that session to another pane
+      head.draggable = true;
+      head.addEventListener('dragstart', ev => ev.dataTransfer.setData('text/plain', sid));
+      tile.appendChild(head);
+
+      const body = document.createElement('div');
+      body.className = 'tile-body';
+      body.id = 'log-' + sid;
+      tile.appendChild(body);
+    } else {
+      const e = document.createElement('div');
+      e.className = 'empty';
+      e.innerHTML = '<div class="big">&#8862;</div><div>Drop a session here</div>'
+        + '<div style="opacity:.6">pane ' + (i + 1) + '</div>';
+      tile.appendChild(e);
+    }
+
+    tile.addEventListener('click', () => setFocus(i));
+    tile.addEventListener('dragover', ev => { ev.preventDefault(); tile.classList.add('dragover'); });
+    tile.addEventListener('dragleave', () => tile.classList.remove('dragover'));
+    tile.addEventListener('drop', ev => {
+      ev.preventDefault();
+      tile.classList.remove('dragover');
+      const sid2 = ev.dataTransfer.getData('text/plain');
+      if (sid2) place(sid2, i);
+    });
+    grid.appendChild(tile);
+  }
+  paintLogs();
+}
+
+/// Putting a session in a pane it is already in elsewhere swaps the two, so
+/// dragging is a rearrange rather than a duplicate - the same session twice
+/// would mean two streams of the same shell fighting over one size.
+function place(sid, i) {
+  const was = tiles.indexOf(sid);
+  if (was === i) { setFocus(i); return; }
+  if (was >= 0) tiles[was] = tiles[i];
+  tiles[i] = sid;
+  if (popped.has(sid)) { const w = popped.get(sid); popped.delete(sid); try { w.close(); } catch {} }
+  focused = i;
+  render();
+}
+
+function setFocus(i) {
+  if (i >= layout) return;
+  focused = i;
+  render();
+}
+
+function setLayout(n) {
+  layout = n;
+  // Fill new panes with sessions that are not on screen yet, so switching to a
+  // 4-up wall does something useful instead of showing three empty boxes.
+  for (let i = 0; i < layout; i++) {
+    if (tiles[i]) continue;
+    const next = order.map(byId).find(s => s && !tiles.includes(s.id) && !popped.has(s.id));
+    tiles[i] = next ? next.id : null;
+  }
+  if (focused >= layout) focused = layout - 1;
+  render();
+  document.getElementById('hint').textContent =
+    n === 1 ? 'One session, as today' :
+    n === 2 ? 'Two side by side - the usual pair' :
+    n === 3 ? 'One big, two watching' : 'Four up - the wall';
+}
+
+function render() {
+  for (const b of document.querySelectorAll('.lay'))
+    b.classList.toggle('on', Number(b.dataset.l) === layout);
+  renderGrid();
+  renderSidebar();
+}
+
+// ── fake output ──────────────────────────────────────────────────────────────
+const logs = {};   // sid -> array of lines
+for (const s of SESSIONS) logs[s.id] = s.script.slice();
+
+function lineHtml(text) {
+  const esc = text.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  if (/^\s*✓/.test(text)) return '<span class="g">' + esc + '</span>';
+  if (/^>/.test(text)) return '<span class="u">' + esc + '</span>';
+  if (/^✱/.test(text)) return '<span class="d">' + esc + '</span>';
+  if (/Allow |waiting for you/.test(text)) return '<span class="y">' + esc + '</span>';
+  return esc;
+}
+
+function paintLogs() {
+  for (const s of SESSIONS) {
+    const el = document.getElementById('log-' + s.id);
+    if (!el) continue;
+    el.innerHTML = logs[s.id].map(lineHtml).join('\n')
+      + (s.status === 'working' ? '\n<span class="caret"></span>' : '\n> <span class="caret"></span>');
+    el.scrollTop = el.scrollHeight;
+  }
+  for (const [sid, w] of popped) {
+    if (!w || w.closed) continue;
+    const el = w.document.getElementById('log');
+    if (!el) continue;
+    const s = byId(sid);
+    el.innerHTML = logs[sid].map(lineHtml).join('\n')
+      + (s.status === 'working' ? '\n<span class="caret"></span>' : '\n> <span class="caret"></span>');
+    el.scrollTop = el.scrollHeight;
+  }
+}
+
+setInterval(() => {
+  for (const s of SESSIONS) {
+    if (s.status !== 'working') continue;
+    if (Math.random() > 0.55) continue;
+    const pool = CHATTER.working;
+    logs[s.id].push(pool[Math.floor(Math.random() * pool.length)]);
+    if (logs[s.id].length > 120) logs[s.id].shift();
+  }
+  paintLogs();
+}, 1400);
+
+// ── pop-out windows ──────────────────────────────────────────────────────────
+// A real window you can drag to another monitor. In the app this would be a
+// second native window on the same local server, not a browser popup.
+const POPUP_CSS = `
+  html,body{height:100%;margin:0;background:#0b0b0c;color:#c9c9cf;
+    font-family:'JetBrains Mono','SF Mono',Menlo,monospace;font-size:12px}
+  *{scrollbar-width:thin;scrollbar-color:#2a2a2f transparent}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:#26262b;border-radius:6px;
+    border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:#3c3c44;border:2px solid transparent;
+    background-clip:content-box}
+  .h{height:32px;display:flex;align-items:center;gap:8px;padding:0 11px;
+    border-bottom:1px solid #242427;background:#101012;color:#f2f2f3;font-size:11.5px}
+  .h .dot{width:7px;height:7px;border-radius:50%;background:#eab308}
+  .h .sp{flex:1}
+  .h .b{border:1px solid #242427;border-radius:5px;background:transparent;color:#8a8a90;
+    padding:3px 7px;cursor:pointer;font:inherit;font-size:10.5px}
+  #log{padding:11px 13px;white-space:pre-wrap;line-height:1.55;overflow-y:auto;
+    height:calc(100% - 32px)}
+  .u{color:#f2f2f3}.g{color:#3ec97a}.y{color:#febc2e}.d{color:#5a5a60}
+  .caret{display:inline-block;width:7px;height:13px;background:#f2f2f3;vertical-align:-2px;
+    animation:blink 1.1s step-end infinite}
+  @keyframes blink{50%{opacity:0}}
+`;
+
+function popOut(sid) {
+  const s = byId(sid);
+  if (popped.has(sid)) { try { popped.get(sid).focus(); } catch {} return; }
+  const w = window.open('', 'mts-' + sid, 'width=820,height=560,menubar=no,toolbar=no');
+  if (!w) { toast('The browser blocked the window - allow pop-ups to try this'); return; }
+  w.document.write(
+    '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + s.name + ' - Mattdaemon</title>'
+    + '<style>' + POPUP_CSS + '</style></head><body>'
+    + '<div class="h"><span class="dot"></span><span>' + s.name
+    + (s.host === 'vps' ? '  ·  vps' : '  ·  this Mac') + '</span>'
+    + '<span class="sp"></span><button class="b" id="back">put it back</button></div>'
+    + '<div id="log"></div></body></html>');
+  w.document.close();
+  w.document.getElementById('back').addEventListener('click', () => w.close());
+  popped.set(sid, w);
+
+  const at = tiles.indexOf(sid);
+  if (at >= 0) tiles[at] = null;
+  render();
+  toast('Drag that window to your other screen - it keeps streaming');
+}
+
+// A popped-out session belongs back in the grid when its window closes.
+setInterval(() => {
+  let changed = false;
+  for (const [sid, w] of [...popped]) {
+    if (w && !w.closed) continue;
+    popped.delete(sid);
+    const free = tiles.slice(0, layout).indexOf(null);
+    if (free >= 0) tiles[free] = sid;
+    changed = true;
+  }
+  if (changed) render();
+}, 700);
+
+window.addEventListener('beforeunload', () => {
+  for (const [, w] of popped) { try { w.close(); } catch {} }
+});
+
+// ── wiring ───────────────────────────────────────────────────────────────────
+document.getElementById('layouts').addEventListener('click', ev => {
+  const b = ev.target.closest('.lay');
+  if (b) setLayout(Number(b.dataset.l));
+});
+// Dragging a session out of the app is the gesture he asked for; a web page
+// cannot see a drop that lands outside its own window, so the top bar carries a
+// zone that stands in for "off this window". In the app itself the drag would
+// simply be let go anywhere on another screen.
+const popZone = document.getElementById('popZone');
+popZone.addEventListener('dragover', ev => {
+  if (!dragSid) return;
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = 'move';
+  popZone.classList.add('over');
+});
+popZone.addEventListener('dragleave', () => popZone.classList.remove('over'));
+popZone.addEventListener('drop', ev => {
+  ev.preventDefault();
+  popZone.classList.remove('over', 'armed');
+  const sid = ev.dataTransfer.getData('text/plain') || dragSid;
+  if (sid) popOut(sid);
+});
+
+document.getElementById('btnPopAll').addEventListener('click', () => {
+  const sid = tiles[focused];
+  if (!sid) { toast('That pane is empty - drop a session into it first'); return; }
+  popOut(sid);
+});
+document.getElementById('btnNotes').addEventListener('click',
+  () => document.getElementById('notes').classList.add('open'));
+document.getElementById('notesClose').addEventListener('click',
+  () => document.getElementById('notes').classList.remove('open'));
+
+document.addEventListener('keydown', ev => {
+  if (!(ev.metaKey || ev.ctrlKey)) return;
+  if (ev.key >= '1' && ev.key <= '4') { ev.preventDefault(); setFocus(Number(ev.key) - 1); }
+  if (ev.shiftKey && ev.key.toLowerCase() === 'o') {
+    ev.preventDefault();
+    if (tiles[focused]) popOut(tiles[focused]);
+  }
+});
+
+setLayout(2);
+</script>
+</body>
+</html>

@@ -7,6 +7,7 @@
 <link rel="stylesheet" href="/static/vendor/xterm.css">
 <script src="/static/vendor/xterm.js"></script>
 <script src="/static/vendor/addon-fit.js"></script>
+<script src="/static/vendor/addon-web-links.js"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Inter:wght@400;500;600;700&display=swap');
 
@@ -22,6 +23,20 @@
     --stOffline:#8a8a90;   /* grey   - disconnected */
   }
   *{margin:0;padding:0;box-sizing:border-box}
+
+  /* One scrollbar treatment for everything that scrolls. macOS draws a bright
+     slab by default, which on a dark terminal reads as part of the content;
+     this is a thin dim thumb, no track, no arrows, lifting only on hover. Set
+     globally rather than per-element so a panel added later cannot forget it. */
+  *{scrollbar-width:thin;scrollbar-color:#2a2a2f transparent}
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-track{background:transparent}
+  ::-webkit-scrollbar-thumb{background:#26262b;border-radius:6px;
+    border:2px solid transparent;background-clip:content-box}
+  ::-webkit-scrollbar-thumb:hover{background:#3c3c44;border:2px solid transparent;
+    background-clip:content-box}
+  ::-webkit-scrollbar-corner{background:transparent}
+
   html,body{height:100%;overflow:hidden}
   body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--ink)}
 
@@ -114,6 +129,18 @@
   .sess .sname[contenteditable="true"]{outline:1px solid #45454b;border-radius:3px;padding:0 3px;cursor:text;white-space:nowrap;overflow:hidden}
   .sess .stag{font-size:10px;color:var(--inkDim);background:#1c1c1f;padding:2px 6px;border-radius:4px}
   .sess.active .stag{color:var(--inkMute);background:#28282c}
+  /* ---- drag to reorder ---- */
+  .sess.dragging{opacity:.35}
+  .sess.drop-before{box-shadow:inset 0 2px 0 var(--accent)}
+  .sess.drop-after{box-shadow:inset 0 -2px 0 var(--accent)}
+  /* ---- saved-for-later folder ---- */
+  .sess-section.sec-saved{cursor:pointer;user-select:none}
+  .sess-section.sec-saved:hover .sec-host{color:var(--ink)}
+  .sess-section.sec-saved.drop-in{box-shadow:inset 0 0 0 1px var(--accent);border-radius:5px}
+  .sess-section .sec-caret{flex:none;font-size:9px;color:var(--inkDim);width:9px}
+  .sess-section .sec-count{flex:none;font-size:10px;color:var(--inkDim);
+    background:#1c1c1f;padding:2px 6px;border-radius:4px;letter-spacing:0}
+  .sess.saved{opacity:.75}
   .sdot.s-idle{background:var(--stIdle);box-shadow:0 0 6px rgba(34,197,94,.4)}
   .sdot.s-offline{background:var(--stOffline)}
   .sdot.s-working,.sdot.s-looping{background:var(--stWorking);
@@ -124,8 +151,144 @@
   .sess-count{font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--inkDim);
     text-align:center;padding-top:5px;border-top:1px solid var(--border)}
 
+  /* ---- first-run setup + settings ------------------------------------------
+     Both are the same object: a full-bleed sheet with one card in the middle.
+     The setup sheet covers everything until the app is somebody's; the settings
+     sheet is the same screen reopened later, one section at a time. */
+  .sheet{position:fixed;inset:0;z-index:200;background:var(--bg);
+    display:none;align-items:center;justify-content:center;padding:26px;overflow-y:auto}
+  .sheet.open{display:flex}
+  .sheet .card{width:100%;max-width:640px;background:var(--surface);border:1px solid var(--border);
+    border-radius:14px;box-shadow:0 30px 80px rgba(0,0,0,.55);
+    display:flex;flex-direction:column;max-height:calc(100vh - 52px);overflow:hidden}
+  .card-head{flex:none;display:flex;align-items:center;gap:13px;padding:20px 22px 16px}
+  .card-mark{width:34px;height:34px;flex:none;border-radius:9px;background:#f2f2f3;color:#0b0b0c;
+    display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:700;
+    font-family:'JetBrains Mono',monospace}
+  .card-title{font-size:15px;font-weight:600;letter-spacing:.01em}
+  .card-sub{font-size:12px;color:var(--inkMute);margin-top:2px}
+  .card-head .card-x{margin-left:auto;flex:none;width:26px;height:26px;border-radius:6px;
+    border:1px solid var(--border);background:transparent;color:var(--inkMute);cursor:pointer;font-size:12px}
+  .card-x:hover{background:#202023;color:var(--ink)}
+
+  .rail{flex:none;display:flex;gap:7px;padding:0 22px 15px}
+  .rail .r{flex:1;display:flex;align-items:center;gap:7px;font-family:'JetBrains Mono',monospace;
+    font-size:10.5px;letter-spacing:.06em;text-transform:uppercase;color:var(--inkDim)}
+  .rail .r .n{width:19px;height:19px;flex:none;border-radius:50%;border:1px solid var(--border);
+    display:flex;align-items:center;justify-content:center;font-size:10px}
+  .rail .r.on{color:var(--ink)}
+  .rail .r.on .n{background:#f2f2f3;border-color:#f2f2f3;color:#0b0b0c;font-weight:700}
+  .rail .r.done .n{border-color:var(--stIdle);color:var(--stIdle)}
+
+  .card-body{flex:1;min-height:0;overflow-y:auto;padding:4px 22px 20px}
+  .step{display:none}
+  .step.on{display:block}
+  .step h3{font-size:14px;font-weight:600;margin-bottom:7px}
+  .step p{font-size:12.5px;color:var(--inkMute);line-height:1.6;margin-bottom:15px}
+  .step p b{color:var(--ink);font-weight:600}
+
+  /* requirement / summary rows */
+  .row{display:flex;align-items:flex-start;gap:11px;padding:12px 13px;border:1px solid var(--border);
+    border-radius:9px;background:var(--surface2);margin-bottom:9px}
+  .row .rdot{width:8px;height:8px;border-radius:50%;flex:none;margin-top:5px;background:var(--stOffline)}
+  .row .rdot.good{background:var(--stIdle);box-shadow:0 0 6px rgba(34,197,94,.4)}
+  .row .rdot.bad{background:var(--stAttention);box-shadow:0 0 6px rgba(239,68,68,.5)}
+  .row .rtext{flex:1;min-width:0}
+  .row .rname{font-size:12.5px;font-weight:600;font-family:'JetBrains Mono',monospace}
+  .row .rnote{font-size:11.5px;color:var(--inkMute);margin-top:3px;line-height:1.5;
+    overflow-wrap:anywhere}
+  .row .ract{flex:none}
+  code.cmd{display:block;margin-top:8px;padding:8px 10px;background:#0b0b0c;border:1px solid var(--border);
+    border-radius:6px;font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--ink);
+    overflow-x:auto;white-space:pre;user-select:text;cursor:copy}
+
+  /* fields */
+  .field{margin-bottom:14px}
+  .field label{display:block;font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;
+    color:#54545a;font-family:'JetBrains Mono',monospace;margin-bottom:6px}
+  .field .fline{display:flex;gap:7px}
+  .field input,.field textarea{flex:1;min-width:0;background:#0b0b0c;border:1px solid var(--border);
+    border-radius:7px;color:var(--ink);font-family:'JetBrains Mono',monospace;font-size:12.5px;
+    padding:9px 11px;outline:none}
+  .field textarea{resize:vertical;min-height:64px;line-height:1.5}
+  .field input:focus,.field textarea:focus{border-color:#45454b}
+  .field .hint{font-size:11px;color:var(--inkDim);margin-top:6px;line-height:1.5}
+
+  .btn-primary{background:#f2f2f3;border:1px solid #f2f2f3;color:#0b0b0c;font-weight:600;
+    font-family:'JetBrains Mono',monospace;font-size:12.5px;padding:9px 17px;border-radius:7px;cursor:pointer}
+  .btn-primary:hover{background:#fff}
+  .btn-primary:disabled{opacity:.4;cursor:default}
+  .btn-ghost{background:transparent;border:1px solid var(--border);color:var(--inkMute);
+    font-family:'JetBrains Mono',monospace;font-size:12px;padding:8px 13px;border-radius:7px;cursor:pointer}
+  .btn-ghost:hover{background:#202023;color:var(--ink)}
+  .btn-ghost:disabled{opacity:.4;cursor:default}
+
+  /* folder browser (the fallback when there is no native picker) */
+  .browse{border:1px solid var(--border);border-radius:9px;background:var(--surface2);
+    max-height:172px;overflow-y:auto;margin-bottom:14px;display:none}
+  .browse.open{display:block}
+  .browse button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:transparent;
+    border:0;border-bottom:1px solid #1c1c1f;color:var(--inkMute);font-family:'JetBrains Mono',monospace;
+    font-size:12px;padding:8px 12px;cursor:pointer}
+  .browse button:hover{background:#202023;color:var(--ink)}
+  .browse button:last-child{border-bottom:0}
+
+  /* the sign-in terminal, live inside the card */
+  .login-term{display:none;height:210px;border:1px solid var(--border);border-radius:9px;
+    background:#0b0b0c;padding:7px;margin-bottom:13px}
+  .login-term.open{display:block}
+  .login-note{display:flex;align-items:center;gap:9px;font-size:12px;color:var(--inkMute);
+    font-family:'JetBrains Mono',monospace;margin-bottom:13px}
+  .login-note .rdot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--stWorking);
+    animation:pulse 1.4s ease-in-out infinite}
+  .login-note.ok .rdot{background:var(--stIdle);animation:none}
+
+  .card-foot{flex:none;display:flex;align-items:center;gap:11px;padding:15px 22px;
+    border-top:1px solid var(--border);background:var(--surface2)}
+  .card-foot .msg{flex:1;font-size:11.5px;line-height:1.45;color:var(--inkMute);
+    font-family:'JetBrains Mono',monospace}
+  .card-foot .msg.bad{color:var(--stAttention)}
+  .card-foot .msg.good{color:var(--stIdle)}
+
+  /* settings-only bits */
+  .sect{border-top:1px solid var(--border);margin-top:18px;padding-top:16px}
+  .sect:first-child{border-top:0;margin-top:0;padding-top:0}
+  .sect h4{font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:#54545a;
+    font-family:'JetBrains Mono',monospace;margin-bottom:11px}
+  .sect .foldout{display:none}
+  .sect .foldout.open{display:block}
+  .linkish{background:transparent;border:0;color:var(--inkMute);text-decoration:underline;
+    font-family:'JetBrains Mono',monospace;font-size:11.5px;cursor:pointer;padding:0}
+  .linkish:hover{color:var(--ink)}
+  .side-foot{display:flex;gap:7px}
+  .side-foot .tb-btn{flex:1}
+  .side-foot .gear{flex:none;width:34px}
+
   /* ---- terminal ---- */
   .term-wrap{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
+  /* ---- visual plan, opened beside the terminal ---- */
+  .plan-pane{display:none;flex:0 0 44%;min-width:320px;max-width:62%;
+    flex-direction:column;background:var(--surface);border-left:1px solid var(--border)}
+  .plan-pane.open{display:flex}
+  .plan-head{height:36px;flex:none;display:flex;align-items:center;gap:8px;
+    padding:0 8px 0 14px;border-bottom:1px solid var(--border);background:var(--surface2)}
+  .plan-tabs{flex:1;min-width:0;display:flex;align-items:center;gap:4px;overflow-x:auto;
+    scrollbar-width:none}
+  .plan-tabs::-webkit-scrollbar{display:none}
+  .ptab{flex:none;max-width:190px;display:flex;align-items:center;gap:7px;
+    padding:3px 7px 3px 9px;border:1px solid transparent;border-radius:5px;
+    background:transparent;color:var(--inkDim);cursor:pointer;
+    font-family:inherit;font-size:11px;letter-spacing:.04em}
+  .ptab:hover{background:#1c1c1f;color:var(--inkMute)}
+  .ptab.active{background:#202023;border-color:#33333a;color:var(--ink)}
+  .ptab .ptab-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ptab .ptab-x{flex:none;font-size:9px;opacity:.45}
+  .ptab .ptab-x:hover{opacity:1;color:var(--red)}
+  .plan-btn{flex:none;width:22px;height:22px;line-height:20px;text-align:center;padding:0;
+    background:transparent;border:1px solid var(--border);border-radius:5px;
+    color:var(--inkMute);cursor:pointer;font-size:11px;font-family:inherit}
+  .plan-btn:hover{border-color:#3a3a3f;color:var(--ink);background:#202023}
+  .plan-frame{flex:1;width:100%;border:0;background:#fff}
   .term-head{height:36px;flex:none;display:flex;align-items:center;gap:10px;padding:0 15px;
     border-bottom:1px solid var(--border);background:#0d0d0e}
   .term-head .chip{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 9px;
@@ -134,11 +297,92 @@
   /* xterm host - replaces the mock's fake .term div */
   .term{flex:1;min-height:0;position:relative;padding:8px 6px 8px 12px;background:var(--bg)}
   .term .xterm{height:100%}
-  .term .xterm-viewport::-webkit-scrollbar,.sess-list::-webkit-scrollbar{width:10px}
-  .term .xterm-viewport::-webkit-scrollbar-thumb,.sess-list::-webkit-scrollbar-thumb{background:#26262a;border-radius:6px}
+  /* xterm sizes its own viewport and paints a background behind it; without
+     this the scrollbar sits on a slightly different black than the terminal. */
+  .term .xterm-viewport{background-color:transparent !important}
   /* an empty state / connecting notice overlaid on the terminal host */
   .term .placeholder{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
     font-family:'JetBrains Mono',monospace;font-size:13px;color:var(--inkDim);pointer-events:none}
+
+  /* ---- the grid: up to four sessions on screen at once ---- */
+  /* The host is a grid rather than a stack of hidden panes. At layout 1 it is a
+     single cell, which is the old single-session view with a header on it. */
+  .term.grid{display:grid;gap:8px;padding:8px}
+  .term.grid[data-layout="1"]{grid-template-columns:1fr;grid-template-rows:1fr}
+  .term.grid[data-layout="2"]{grid-template-columns:1fr 1fr;grid-template-rows:1fr}
+  .term.grid[data-layout="3"]{grid-template-columns:1.4fr 1fr;grid-template-rows:1fr 1fr;
+    grid-template-areas:"a b" "a c"}
+  .term.grid[data-layout="3"] .tile:nth-child(1){grid-area:a}
+  .term.grid[data-layout="3"] .tile:nth-child(2){grid-area:b}
+  .term.grid[data-layout="3"] .tile:nth-child(3){grid-area:c}
+  .term.grid[data-layout="4"]{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+
+  .tile{min-width:0;min-height:0;display:flex;flex-direction:column;background:var(--surface);
+    border:1px solid var(--border);border-radius:10px;overflow:hidden}
+  .tile.focused{border-color:#5b5b64;box-shadow:0 0 0 1px #5b5b64}
+  .tile.dragover{border-color:var(--stIdle);box-shadow:0 0 0 1px var(--stIdle)}
+  /* With four panes visible, a session that needs you has to say so on its own
+     pane - the sidebar dot is no longer where the eye is. */
+  .tile.attention{border-color:var(--stAttention);animation:tilePulse 1.15s infinite}
+  @keyframes tilePulse{0%,100%{box-shadow:0 0 0 1px var(--stAttention)}
+                       50%{box-shadow:0 0 0 3px rgba(239,68,68,.28)}}
+  /* At layout 1 the tile is the whole view, so its chrome would just be a second
+     header under the real one. */
+  .term.grid[data-layout="1"] .tile{border:0;border-radius:0;background:transparent}
+  .term.grid[data-layout="1"] .tile.focused{box-shadow:none}
+  .term.grid[data-layout="1"] .tile-head{display:none}
+
+  .tile-head{flex:none;height:30px;display:flex;align-items:center;gap:8px;padding:0 6px 0 10px;
+    border-bottom:1px solid var(--border);background:var(--surface2);
+    font-family:'JetBrains Mono',monospace;font-size:11px;cursor:grab}
+  .tile-head .sdot{width:7px;height:7px;border-radius:50%;flex:none}
+  .tile-head .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+  .tile-head .where{color:var(--inkDim);font-size:9.5px;border:1px solid var(--border);
+    border-radius:4px;padding:1px 5px;flex:none}
+  .tile-head .key{color:var(--inkDim);font-size:9.5px;flex:none}
+  .tile-head button{background:transparent;border:1px solid transparent;border-radius:5px;
+    color:var(--inkDim);cursor:pointer;font-size:11px;padding:2px 6px;font-family:inherit;flex:none}
+  .tile-head button:hover{background:#202023;color:var(--ink);border-color:var(--border)}
+
+  /* Hosts one pane's xterm. Padding matches the old single-pane .term so the
+     terminal does not sit flush against the tile border. */
+  .tile-body{flex:1;min-height:0;position:relative;padding:6px 4px 6px 9px}
+  .tile-body .xterm{height:100%}
+
+  .tile .empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
+    justify-content:center;gap:6px;font-family:'JetBrains Mono',monospace;font-size:11.5px;
+    color:var(--inkDim);text-align:center;padding:14px;pointer-events:none}
+  .tile .empty .big{font-size:20px;opacity:.5}
+
+  /* layout picker in the top bar */
+  .layouts{display:flex;gap:5px}
+  .lay{width:32px;height:24px;border:1px solid var(--border);border-radius:6px;background:transparent;
+    cursor:pointer;display:flex;padding:3px;gap:2px}
+  .lay:hover{border-color:#3a3a3f;background:#1a1a1d}
+  .lay.on{border-color:#f2f2f3;background:#202023}
+  .lay i{display:block;background:var(--inkDim);border-radius:1px;flex:1}
+  .lay.on i{background:var(--ink)}
+  .lay .col{display:flex;flex-direction:column;gap:2px;flex:1}
+
+  /* a session that is in a pane / popped out, marked in the sidebar */
+  .sess .where{font-size:9px;color:var(--inkDim);border:1px solid var(--border);border-radius:4px;
+    padding:1px 4px;letter-spacing:.04em;flex:none;font-family:'JetBrains Mono',monospace}
+  .sess.placed .where{color:var(--inkMute);border-color:#33333a}
+  /* where the row would land if you let go now */
+  .sess.drop-before{box-shadow:inset 0 2px 0 var(--ink)}
+  .sess.drop-after{box-shadow:inset 0 -2px 0 var(--ink)}
+  .sess.dragging{opacity:.4}
+
+  /* ---- solo: one session in its own window ---- */
+  /* No sidebar, no layout picker, no pop-out button - this window IS the
+     popped-out pane, so everything that rearranges the wall belongs to the
+     window that still has one. */
+  body.solo .sidebar,
+  body.solo .plan-pane,
+  body.solo #layouts,
+  body.solo #btnPop{display:none}
+  body.solo .term.grid{padding:0}
+  body.solo .tile{border:0;border-radius:0}
 </style>
 </head>
 <body>
@@ -151,25 +395,49 @@
       <div class="sess-list" id="sessList"></div>
 
       <div class="sess-count" id="sessCount">0 sessions</div>
-      <button class="tb-btn sb-reconnect" id="btnReload">&#8635; Reconnect</button>
+      <div class="side-foot">
+        <button class="tb-btn sb-reconnect" id="btnReload">&#8635; Reconnect</button>
+        <button class="tb-btn gear" id="btnSettings" title="Settings - folder, Claude account, VPS">&#9881;</button>
+      </div>
     </aside>
 
     <!-- terminal -->
     <div class="term-wrap">
       <div class="term-head">
+        <div class="layouts" id="layouts">
+          <button class="lay" data-l="1" title="One session"><i></i></button>
+          <button class="lay" data-l="2" title="Two side by side"><i></i><i></i></button>
+          <button class="lay" data-l="3" title="One big + two"><i></i><span class="col"><i></i><i></i></span></button>
+          <button class="lay" data-l="4" title="Four up">
+            <span class="col"><i></i><i></i></span><span class="col"><i></i><i></i></span>
+          </button>
+        </div>
         <button class="attach" id="btnAttach" title="Upload an image or file into this session (or paste / drop it)">&#8613; Attach</button>
+        <button class="attach" id="btnPlan" title="Show the visual plan for this session" style="display:none">&#9635; Plan</button>
+        <button class="attach" id="btnPop" title="Open the focused session in its own window (&#8984;&#8679;O)">&#8599; Pop out</button>
         <span class="chip" id="termChip">&#9679; idle</span>
       </div>
-      <div class="term" id="term">
+      <div class="term grid" id="term" data-layout="1">
         <div class="placeholder" id="termPlaceholder">No session &mdash; create one to begin.</div>
       </div>
     </div>
+
+    <!-- visual plan, opened beside the terminal -->
+    <aside class="plan-pane" id="planPane">
+      <div class="plan-head">
+        <div class="plan-tabs" id="planTabs"></div>
+        <button class="plan-btn" id="planPop" title="Open in your browser">&#8599;</button>
+        <button class="plan-btn" id="planClose" title="Hide the panel">&#10005;</button>
+      </div>
+      <iframe class="plan-frame" id="planFrame" title="Preview"></iframe>
+    </aside>
   </div>
 </div>
 
 <!-- right-click menu for session rows -->
 <div class="ctx" id="ctxMenu">
   <button id="ctxRename"><span class="k">&#9998;</span> Rename</button>
+  <button id="ctxSave"><span class="k">&#9776;</span> Save for later</button>
   <button id="ctxSend"><span class="k">&#8593;</span> Send to VPS</button>
   <div class="sep"></div>
   <button id="ctxClose" class="danger"><span class="k">&#10005;</span> Close session</button>
@@ -183,6 +451,197 @@
     <div class="modal-actions">
       <button class="btn-cancel" id="confirmCancel">Cancel</button>
       <button class="btn-danger" id="confirmOk">Close session</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── first run ────────────────────────────────────────────────────────────
+     Shown until this copy of the app belongs to whoever is sitting in front of
+     it: their Claude subscription, their folder. Nothing behind it can open a
+     shell before that - the server refuses too, not just this screen. -->
+<div class="sheet" id="setupSheet">
+  <div class="card">
+    <div class="card-head">
+      <div class="card-mark">M</div>
+      <div>
+        <div class="card-title">Welcome to Mattdaemon</div>
+        <div class="card-sub" id="setupSub">Three things and it is yours.</div>
+      </div>
+    </div>
+
+    <div class="rail" id="setupRail">
+      <div class="r" data-r="checks"><span class="n">1</span> Requirements</div>
+      <div class="r" data-r="folder"><span class="n">2</span> Your folder</div>
+      <div class="r" data-r="signin"><span class="n">3</span> Sign in</div>
+    </div>
+
+    <div class="card-body">
+      <!-- 1. requirements -->
+      <section class="step" data-step="checks">
+        <h3>What this needs</h3>
+        <p>Mattdaemon runs <b>Claude Code</b> in <b>tmux</b> sessions on this Mac.
+           Both live on your machine - the app just drives them.</p>
+        <div class="row" id="rowClaude">
+          <span class="rdot"></span>
+          <div class="rtext">
+            <div class="rname">Claude Code</div>
+            <div class="rnote">Checking...</div>
+          </div>
+        </div>
+        <div class="row" id="rowTmux">
+          <span class="rdot"></span>
+          <div class="rtext">
+            <div class="rname">tmux</div>
+            <div class="rnote">Checking...</div>
+          </div>
+        </div>
+        <button class="btn-ghost" id="btnRecheck">Check again</button>
+      </section>
+
+      <!-- 2. folder -->
+      <section class="step" data-step="folder">
+        <h3>Where does your work live?</h3>
+        <p>New terminal sessions open here, so Claude starts inside your project
+           instead of your home directory. You can change it later.</p>
+        <div class="field">
+          <label>Folder</label>
+          <div class="fline">
+            <input id="folderInput" spellcheck="false" autocomplete="off" placeholder="~/Documents/my-project">
+            <button class="btn-ghost" id="btnPick">Choose...</button>
+          </div>
+          <div class="hint" id="folderHint">Pick any folder you have on this Mac - a repo, a notes folder, anything.</div>
+        </div>
+        <div class="browse" id="folderBrowse"></div>
+      </section>
+
+      <!-- 3. sign in -->
+      <section class="step" data-step="signin">
+        <h3>Sign in to Claude</h3>
+        <p>This runs <b>claude auth login</b> in a real terminal below and opens
+           your browser. You sign in with <b>your own</b> Claude subscription -
+           the app never sees your password, and no account is bundled with it.</p>
+        <div class="login-note" id="loginNote" style="display:none">
+          <span class="rdot"></span><span class="ltext">Waiting for the browser...</span>
+        </div>
+        <div class="login-term" id="loginTerm"></div>
+        <button class="btn-primary" id="btnSignIn">Sign in to Claude</button>
+      </section>
+
+      <!-- 4. done -->
+      <section class="step" data-step="done">
+        <h3>You are set up</h3>
+        <p>Sessions keep running when you close the window, so you can come back
+           to whatever Claude was doing.</p>
+        <div class="row" id="doneAccount">
+          <span class="rdot good"></span>
+          <div class="rtext"><div class="rname">Signed in</div><div class="rnote"></div></div>
+        </div>
+        <div class="row" id="doneFolder">
+          <span class="rdot good"></span>
+          <div class="rtext"><div class="rname">Folder</div><div class="rnote"></div></div>
+        </div>
+      </section>
+    </div>
+
+    <div class="card-foot">
+      <button class="btn-ghost" id="setupBack">Back</button>
+      <span class="msg" id="setupMsg"></span>
+      <button class="btn-primary" id="setupNext">Continue</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── settings ─────────────────────────────────────────────────────────────
+     The same three things, afterwards - plus the optional VPS, which is off and
+     out of sight until someone deliberately connects one. -->
+<div class="sheet" id="settingsSheet">
+  <div class="card">
+    <div class="card-head">
+      <div class="card-mark">&#9881;</div>
+      <div>
+        <div class="card-title">Settings</div>
+        <div class="card-sub" id="settingsSub">This Mac only</div>
+      </div>
+      <button class="card-x" id="settingsClose">&#10005;</button>
+    </div>
+
+    <div class="card-body">
+      <div class="sect">
+        <h4>Working folder</h4>
+        <div class="field">
+          <div class="fline">
+            <input id="setFolder" spellcheck="false" autocomplete="off">
+            <button class="btn-ghost" id="setPick">Choose...</button>
+            <button class="btn-ghost" id="setFolderSave">Save</button>
+          </div>
+          <div class="hint">Applies to sessions you open from now on. The ones already running stay where they are.</div>
+        </div>
+        <div class="browse" id="setBrowseList"></div>
+      </div>
+
+      <div class="sect">
+        <h4>Claude account</h4>
+        <div class="row" id="setAccount">
+          <span class="rdot"></span>
+          <div class="rtext"><div class="rname">Checking...</div><div class="rnote"></div></div>
+          <div class="ract"><button class="btn-ghost" id="setSwitch">Sign in as someone else</button></div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <h4>VPS (optional)</h4>
+        <div class="row" id="setVpsRow">
+          <span class="rdot"></span>
+          <div class="rtext">
+            <div class="rname">Not connected</div>
+            <div class="rnote">Connect an AI-Hub dashboard and its terminal sessions appear in the sidebar next to this Mac's.</div>
+          </div>
+          <div class="ract"><button class="btn-ghost" id="setVpsToggle">Connect</button></div>
+        </div>
+        <div class="foldout" id="setVpsForm">
+          <div class="field">
+            <label>Dashboard address</label>
+            <div class="fline"><input id="setVpsUrl" spellcheck="false" autocomplete="off" placeholder="http://203.0.113.10:3333"></div>
+          </div>
+          <div class="field">
+            <label>Token</label>
+            <div class="fline"><input id="setVpsToken" type="password" spellcheck="false" autocomplete="off" placeholder="dashboard token"></div>
+            <div class="hint">Kept on this Mac and used server-side - it is never handed to the page.</div>
+          </div>
+          <div class="field">
+            <label>Folder mapping (optional)</label>
+            <div class="fline"><textarea id="setVpsMap" spellcheck="false" placeholder="~/Documents/my-project = /home/you/my-project"></textarea></div>
+            <div class="hint">One per line, local = remote. Used by "Send to VPS" so a session lands in the matching folder over there.</div>
+          </div>
+          <div class="fline">
+            <button class="btn-primary" id="setVpsSave">Connect</button>
+            <button class="btn-ghost" id="setVpsClear">Disconnect</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <h4>How it is running</h4>
+        <div class="row" id="setHealth">
+          <span class="rdot"></span>
+          <div class="rtext">
+            <div class="rname">Checking...</div>
+            <div class="rnote"></div>
+          </div>
+          <div class="ract"><button class="btn-ghost" id="setHealthRefresh">Refresh</button></div>
+        </div>
+      </div>
+
+      <div class="sect">
+        <h4>This install</h4>
+        <div class="hint" id="setConfigPath" style="margin-bottom:10px"></div>
+        <button class="linkish" id="setRerun">Run first-time setup again</button>
+      </div>
+    </div>
+
+    <div class="card-foot">
+      <span class="msg" id="settingsMsg"></span>
+      <button class="btn-primary" id="settingsDone">Done</button>
     </div>
   </div>
 </div>
@@ -222,15 +681,86 @@
   let sessions = [];      // last /sessions listing (each carries host: 'local'|'vps')
   let states = {};        // last /states  (sid -> working|attention|idle|looping|offline)
   let vpsInfo = { enabled: false, online: false, host: '' };  // from /sessions .vps
+
+  // ── the grid ────────────────────────────────────────────────────────────
+  // The window shows between one and four sessions at once. `tiles` says which
+  // session sits in which pane (null = empty), and it is always four long
+  // whatever the layout, so shrinking to a single pane and going back to four
+  // finds the wall exactly as it was left.
+  //
+  // `activeSid` survives as the session in the focused pane. Everything that
+  // acts on "the session you are working in" - Attach, the plan panel, the
+  // right-click menu, send-to-VPS - still reads it, and none of it had to learn
+  // about panes.
+  // A popped-out session opens this same page with ?solo=<sid>: one pane, no
+  // sidebar, no layout picker. It is the same code because it is the same
+  // terminal - a pop-out is a different window onto a session, not a different
+  // program.
+  const soloSid = new URLSearchParams(location.search).get('solo');
+  if (soloSid) document.body.classList.add('solo');
+
+  let layout  = soloSid ? 1 : loadPref('layout', 1);
+  let tiles   = soloSid ? [soloSid, null, null, null]
+                        : loadPref('tiles', [null, null, null, null]);
+  let focused = soloSid ? 0 : loadPref('focused', 0);
+  const popped = new Set();          // sids showing in their own window
   let activeSid = null;
+  let booted = false;                // has the grid been built once?
+
+  if (![1, 2, 3, 4].includes(layout)) layout = 1;
+  if (!Array.isArray(tiles)) tiles = [null, null, null, null];
+  tiles = [0, 1, 2, 3].map(i => (typeof tiles[i] === 'string' ? tiles[i] : null));
+  if (!(focused >= 0 && focused < 4)) focused = 0;
+
+  /// The wall belongs to the main window. A solo window saving "one pane, this
+  /// session" would flatten the layout the main window is remembering, so it
+  /// keeps its shape entirely in memory.
+  function saveLayout() {
+    if (soloSid) return;
+    savePref('layout', layout);
+    savePref('tiles', tiles);
+    savePref('focused', focused);
+  }
+
+  /// The first empty pane, or the focused one when the wall is full - so
+  /// clicking a session always puts it somewhere you are looking.
+  function firstFreeTile() {
+    const free = tiles.slice(0, layout).indexOf(null);
+    return free >= 0 ? free : focused;
+  }
+
+  // ── terminal-capability replies ─────────────────────────────────────────
+  //
+  // tmux asks the terminal what it is when a client attaches, and xterm answers.
+  // Those answers come back out through onData - the same path as typing - and
+  // are written to the tmux client's PTY. On a first attach tmux is still
+  // listening and swallows them. On a re-attach it has finished its handshake,
+  // so the bytes fall straight through to the shell and are typed into it:
+  //
+  //   Mathiass-Laptop:~ mathiassivertsen$ 1;2c0;276;0c1;2c0;276;0c
+  //
+  // one pair per re-attach, and a command if you then press Enter. It predates
+  // the grid, but a grid re-attaches whenever the wall is rearranged, which
+  // turns an occasional oddity into a constant one.
+  //
+  // A reply always arrives as one whole chunk, while typing arrives a character
+  // at a time - that is what makes these safe to recognise. The patterns are the
+  // primary/secondary device attributes and the status reports; nothing a key
+  // produces looks like them (arrows end in A-D, function keys in ~).
+  //
+  // Dropping them costs nothing that was working: the reply only ever leaks
+  // BECAUSE it arrived too late to be read, and tmux falls back to what TERM
+  // already told it.
+  const DEVICE_REPLY = /^\x1b\[(\?[0-9;]*c|>[0-9;]*c|[0-9;]*[Rn])$/;
+  const isDeviceReply = data => data.length > 1 && DEVICE_REPLY.test(data);
 
   // ── pane lifecycle ──────────────────────────────────────────────────────
   function makePane(sid, name) {
     const container = document.createElement('div');
     container.style.width = '100%';
     container.style.height = '100%';
-    container.style.display = 'none';
-    termHost.appendChild(container);
+    // Not attached here: renderGrid puts it in whichever tile the session is in,
+    // and moves it when the session moves.
 
     const term = new Terminal({
       cursorBlink: true,
@@ -241,55 +771,225 @@
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
+    // URLs in the output become clickable, and open in the preview panel rather
+    // than the browser - the point is to see what a session is building without
+    // leaving it. The panel's arrow button kicks the current tab out to Safari.
+    try {
+      term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => openLink(uri)));
+    } catch {}
     term.open(container);
 
     const pane = { term, fit, container, abort: null, connected: false, name, exited: false };
     panes[sid] = pane;
 
-    // debounced input (~16ms) like the reference client
-    let inputBuffer = '', flushTimer = null, resizeTimer = null;
-    term.onData(data => {
-      inputBuffer += data;
-      if (!flushTimer) {
-        flushTimer = setTimeout(() => {
-          const buf = inputBuffer; inputBuffer = ''; flushTimer = null;
-          fetch('/api/terminal/input', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sid, data: buf })
-          }).catch(() => {});
-        }, 16);
+    // Input goes out on the leading edge: the first keystroke is sent on its
+    // own, straight away, and only what arrives WHILE that request is in flight
+    // is batched into the next one.
+    //
+    // It used to wait 16ms and send whatever had piled up, which merged ordinary
+    // typing into multi-character writes. Claude Code reads a multi-character
+    // chunk as a PASTE rather than as keystrokes, and several of its keys only
+    // work as keystrokes: `!` opens bash mode only as a single press into an
+    // empty prompt, and in a paste it is just an exclamation mark. (Same reason
+    // a batched Enter becomes a line break instead of submitting - which
+    // send-to-VPS already had to work around.) Esc merged with the next
+    // character is worse still: the two together form an escape sequence that
+    // means something else entirely.
+    //
+    // On loopback a write costs a millisecond or two, so this is still about one
+    // request per burst when typing fast - it just never glues the first key to
+    // the rest.
+    // Keys that must never share a write with anything else. Enter is the one
+    // that bites: inside a chunk Claude reads it as a line break, so a fast
+    // typist's Enter lands in the prompt instead of sending it. Escape and the
+    // interrupts are the same story - merged with the next character they stop
+    // being keys and start being an escape sequence.
+    const SOLO_KEYS = new Set(['\r', '\n', '\x1b', '\x03', '\x04', '\t']);
+
+    // A queue of chunks, not one string: xterm hands us one character per
+    // keystroke and the whole lot in one go for a paste, and that difference is
+    // the only way to tell typing from pasting. Ordinary characters merge with
+    // their neighbours; a paste and a solo key travel alone.
+    let inputQueue = [], inputInFlight = false, resizeTimer = null;
+
+    const nextWrite = () => {
+      let out = inputQueue.shift();
+      if (out.length !== 1 || SOLO_KEYS.has(out)) return out;   // paste / solo key
+      while (inputQueue.length) {
+        const peek = inputQueue[0];
+        if (peek.length !== 1 || SOLO_KEYS.has(peek)) break;
+        out += inputQueue.shift();
       }
+      return out;
+    };
+
+    const flushInput = () => {
+      if (inputInFlight || !inputQueue.length) return;
+      inputInFlight = true;
+      fetch('/api/terminal/input', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sid, data: nextWrite() })
+      }).catch(() => {}).finally(() => {
+        inputInFlight = false;
+        flushInput();          // send anything typed while that was out
+      });
+    };
+
+    term.onData(data => {
+      if (isDeviceReply(data)) return;
+      inputQueue.push(data);
+      flushInput();
     });
     // debounced resize (~200ms) like the reference client
     term.onResize(({ cols, rows }) => {
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => {
-        fetch('/api/terminal/resize', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sid, cols, rows })
-        }).catch(() => {});
-      }, 200);
+      resizeTimer = setTimeout(() => sendResize(sid, cols, rows), 200);
     });
 
-    connectPane(sid);
+    // Deliberately NOT connected here: switchTo opens the stream once the pane is
+    // visible and fitted, because the server answers a new stream with a repaint
+    // sized to whatever geometry the terminal has at that moment. See switchTo.
     return pane;
   }
 
-  function connectPane(sid) {
-    const pane = panes[sid];
-    if (!pane || pane.connected) return;
-    pane.exited = false;
-    pane.abort = new AbortController();
-    pane.connected = true;
-    fetch(`/api/terminal/stream?sid=${encodeURIComponent(sid)}`, { signal: pane.abort.signal })
+  // Output arrives on one long-lived fetch per pane. It can die two ways and
+  // only one of them is visible: a clean drop rejects the reader, but a socket
+  // that goes stale underneath us - waking the Mac from sleep is the reliable
+  // way to make one - simply stops delivering bytes and never errors. Typing
+  // still works either way, because every keystroke is its own short POST, so
+  // the terminal looks frozen while the session behind it is perfectly healthy.
+  //
+  // Hence the two rules below: never leave a pane disconnected without a retry
+  // queued, and treat silence as death. The server pings every 15s, so nothing
+  // arriving for STALL_MS means the socket is gone whatever it claims to be.
+  // ── terminal size reporting ──────────────────────────────────────────────
+  // A session is one tmux window, so it has one size, and the server sizes it to
+  // the smallest viewer that has reported within a few seconds. Two things are
+  // needed to hold up that end of the bargain.
+  //
+  // The id says which reports are ours, so resizing ourselves replaces our last
+  // report instead of competing with it. Without it, narrowing the terminal and
+  // widening it again - opening the preview panel does exactly that - leaves the
+  // window pinned at the narrow width.
+  //
+  // The heartbeat below is the other half: the server only re-evaluates when a
+  // report arrives, so with nothing reporting, whatever width it last settled on
+  // is the width it keeps, however wrong. That is the half-width terminal with
+  // characters dropping off the right-hand side.
+  const viewerId = 'mts-' + Math.random().toString(36).slice(2);
+
+  function sendResize(sid, cols, rows) {
+    fetch('/api/terminal/resize', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid, cols, rows, viewer: viewerId })
+    }).catch(() => {});
+  }
+
+  // The heartbeat has to keep speaking - the server drops a viewer's size report
+  // after SIZE_TTL (6s) and sizes the window to the smallest viewer still
+  // reporting - but it does not have to shout. Every 1.5s was 40 POSTs a minute
+  // that nearly always said the same thing, each one taking a slot from the same
+  // small connection pool the keystrokes and the buttons draw on. Say it when it
+  // changes, and otherwise just often enough to stay inside that TTL. A hidden
+  // window is not a viewer at all.
+  //
+  // Every visible pane reports, not just the focused one: in a grid each pane is
+  // a different width, and a session sized to the window rather than to its own
+  // pane is the one with characters falling off the right-hand side. The reports
+  // are per-session, so panes never compete - they each describe their own.
+  const sizeSaid = {};   // sid -> 'COLSxROWS' last reported, and when
+  setInterval(() => {
+    if (document.hidden) return;
+    const now = Date.now();
+    for (const sid of streamSids()) {
+      const pane = panes[sid];
+      if (!pane || !pane.connected || pane.exited || pane.closing) continue;
+      const size = pane.term.cols + 'x' + pane.term.rows;
+      const last = sizeSaid[sid];
+      if (last && last.size === size && now - last.at < 4000) continue;
+      sizeSaid[sid] = { size, at: now };
+      sendResize(sid, pane.term.cols, pane.term.rows);
+    }
+  }, 1000);
+
+  const STALL_MS  = 45000;   // no bytes at all -> assume the socket is dead
+  const STALE_MS  = 25000;   // on wake/focus: quieter than this is suspect
+  const RETRY_MAX = 5000;
+
+  // ── output transport: one connection for every visible pane ───────────────
+  //
+  // Panes used to own connections - one each, and only the visible pane was
+  // allowed one. A browser gives an origin about six connections and an output
+  // stream never finishes, so a wall of four panes would have spent nearly the
+  // lot on output alone, leaving the polls and, worse, the per-keystroke POSTs
+  // queueing behind them. That reads as a terminal that lags while you type.
+  //
+  // So the connection belongs to the app rather than to a pane: one merged
+  // stream carrying every visible session, each event tagged with the sid it
+  // came from. Showing another session re-opens that one stream with a longer
+  // list instead of opening a second socket, which is why the grid can grow
+  // without a connection budget to think about.
+  const stream = { abort: null, connected: false, epoch: 0, lastRx: 0,
+                   retries: 0, retryTimer: null, sids: [] };
+
+  const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+  /// The sessions that should be on the wire: whatever sits in a visible pane.
+  /// A popped-out session is not among them - its own window streams it.
+  function streamSids() {
+    return tiles.slice(0, layout).filter(
+      sid => sid && panes[sid] && !panes[sid].exited && !panes[sid].closing);
+  }
+
+  /// Bring the connection into line with what is on screen. Cheap to call after
+  /// any rearrangement: it re-opens only when the set of sessions has changed.
+  function syncStream() {
+    const want = streamSids();
+    if (stream.connected && sameList(want, stream.sids)) return;
+    openStream(want);
+  }
+
+  /// The panes on the wire share the stream's fate, and renderHead reads it.
+  function markConnected(on) {
+    stream.connected = on;
+    for (const sid of stream.sids) if (panes[sid]) panes[sid].connected = on;
+  }
+
+  function openStream(sids) {
+    try { stream.abort && stream.abort.abort(); } catch {}
+    clearTimeout(stream.retryTimer);
+    stream.retryTimer = null;
+    stream.sids = sids.slice();
+    if (!sids.length) { stream.abort = null; markConnected(false); return; }
+
+    stream.abort = new AbortController();
+    stream.lastRx = Date.now();
+    markConnected(true);
+    // Each attempt claims the stream by bumping the epoch, so an attempt that is
+    // superseded mid-flight reports into the void rather than flipping state or
+    // queueing a retry that races the live one.
+    const epoch = stream.epoch = stream.epoch + 1;
+    const current = () => stream.epoch === epoch;
+    const dropped = () => {
+      if (!current()) return;
+      markConnected(false);
+      scheduleReconnect();
+    };
+
+    fetch('/api/terminal/stream-multi?sids=' + sids.map(encodeURIComponent).join(','),
+          { signal: stream.abort.signal })
       .then(res => {
+        if (!current()) return;
         if (!res.ok) throw new Error('stream failed');
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buf = '';
         function pump() {
           reader.read().then(({ done, value }) => {
-            if (done) { pane.connected = false; return; }
+            if (!current()) return;
+            if (done) { dropped(); return; }
+            stream.lastRx = Date.now();   // pings count: this is a liveness clock
+            stream.retries = 0;
             buf += decoder.decode(value, { stream: true });
             const lines = buf.split('\n');
             buf = lines.pop();
@@ -297,59 +997,389 @@
               if (!line.startsWith('data: ')) continue;
               let evt;
               try { evt = JSON.parse(line.slice(6)); } catch { continue; }
-              if (evt.type === 'output' || evt.type === 'replay') {
-                const bytes = Uint8Array.from(atob(evt.data), c => c.charCodeAt(0));
-                pane.term.write(bytes);
-              } else if (evt.type === 'exit') {
-                pane.term.write('\r\n\x1b[33m[Session ended]\x1b[0m\r\n');
-                pane.exited = true;
-                pane.connected = false;
-                if (sid === activeSid) renderHead();
-                return;
-              }
-              // ping / detached / desync: keep pumping; the server re-attaches
-              // the underlying view for us.
+              handleEvent(evt);
             }
             pump();
-          }).catch(() => { pane.connected = false; });
+          }).catch(dropped);
         }
         pump();
-        if (sid === activeSid) { try { pane.fit.fit(); } catch {} }
+        refitAll();
       })
-      .catch(() => { pane.connected = false; });
+      .catch(dropped);
+  }
+
+  /// One event off the merged stream, routed to the pane that owns it.
+  function handleEvent(evt) {
+    const pane = evt.sid ? panes[evt.sid] : null;
+
+    if (evt.type === 'output' || evt.type === 'replay') {
+      if (!pane) return;            // a pane went away while bytes were in flight
+      // A replay is a full repaint of the screen, not a continuation of one, and
+      // the server sends one per session on every fresh connection.
+      //
+      // Rearranging the grid re-opens the stream and deliberately leaves the
+      // terminals populated, so without this the whole scrollback lands on top of
+      // a screen already showing it. Wherever the repaint leaves a line shorter
+      // than the one underneath, that line's tail survives - the litter of stray
+      // digits and half-words that only a select-all and delete clears.
+      //
+      // Clearing first costs nothing: the replay carries everything the buffer
+      // held anyway.
+      if (evt.type === 'replay') pane.term.reset();
+      pane.term.write(Uint8Array.from(atob(evt.data), c => c.charCodeAt(0)));
+      return;
+    }
+
+    if (evt.type === 'desync') {
+      // The server drops a slow subscriber's backlog rather than killing it, and
+      // says so, on the understanding that we re-request a replay and carry on.
+      // Pumping past it leaves a hole in the byte stream, and every escape
+      // sequence after the hole is applied to a screen state the shell does not
+      // believe it is drawing on. Nothing repairs that on its own.
+      //
+      // Re-opening repaints every pane, not just the one that fell behind - a
+      // heavier cure than the illness, but a desync takes a backlog of 256
+      // events to happen at all, and a correct wall beats a cheap one.
+      openStream(streamSids());
+      return;
+    }
+
+    if (evt.type === 'exit') {
+      if (!pane) return;
+      pane.term.write('\r\n\x1b[33m[Session ended]\x1b[0m\r\n');
+      pane.exited = true;
+      pane.connected = false;
+      renderHead();
+      renderGrid();
+      return;
+    }
+
+    // attached / ping / detached / error: nothing to draw. The server re-attaches
+    // the underlying view for us.
+  }
+
+  /// Queue another attempt, backing off so a server that is down (or still
+  /// coming up after a wake) is not hammered. Cleared on the first bytes back.
+  function scheduleReconnect() {
+    if (stream.retryTimer) return;
+    stream.retries = (stream.retries || 0) + 1;
+    const wait = Math.min(RETRY_MAX, 400 * Math.pow(2, stream.retries - 1));
+    stream.retryTimer = setTimeout(() => {
+      stream.retryTimer = null;
+      openStream(streamSids());
+    }, wait);
+  }
+
+  /// Throw away the current connection and open a fresh one at once - the only
+  /// cure for a socket that is stale but not closed, which cannot report itself.
+  function forceReconnect() {
+    stream.retries = 0;
+    openStream(streamSids());
+  }
+
+  /// Reconnect if the stream is down, or has gone quiet for longer than maxAge.
+  ///
+  /// `kick` abandons a pending backoff and retries at once. That is right after a
+  /// wake, where whatever failed the last attempts has just stopped being true,
+  /// and wrong on the routine sweep: cancelling the backoff on every tick would
+  /// cap it at the sweep interval and leave a stream that cannot connect retrying
+  /// forever at that rate. Each vps: attempt costs a connection to the box that
+  /// lingers for its read timeout, so the backoff is load-bearing.
+  function reviveStreams(maxAge, kick) {
+    if (!streamSids().length) return;
+    if (!stream.connected) {
+      if (kick) {
+        clearTimeout(stream.retryTimer);
+        stream.retryTimer = null;
+        stream.retries = 0;
+      }
+      if (!stream.retryTimer) openStream(streamSids());
+    } else if (Date.now() - (stream.lastRx || 0) > maxAge) {
+      forceReconnect();
+    }
+  }
+
+  /// Take a session off the wire by taking it out of the grid. There is no
+  /// per-pane connection left to drop: the stream reopens without it.
+  function disconnectPane(sid) {
+    let changed = false;
+    for (let i = 0; i < tiles.length; i++) {
+      if (tiles[i] === sid) { tiles[i] = null; changed = true; }
+    }
+    if (panes[sid]) panes[sid].connected = false;
+    if (changed) { saveLayout(); render(); } else { syncStream(); }
   }
 
   function destroyPane(sid) {
     const pane = panes[sid];
     if (!pane) return;
-    try { pane.abort && pane.abort.abort(); } catch {}
+    pane.closing = true;   // keeps it out of streamSids before the stream reopens
     try { pane.term.dispose(); } catch {}
     if (pane.container.parentNode) pane.container.parentNode.removeChild(pane.container);
     delete panes[sid];
+    popped.delete(sid);
+    // Leave no pane pointing at a session that no longer exists, or the next
+    // relayout would try to build a tile around it.
+    let held = false;
+    for (let i = 0; i < tiles.length; i++) if (tiles[i] === sid) { tiles[i] = null; held = true; }
+    if (held) saveLayout();
   }
 
-  // ── switching the active session ─────────────────────────────────────────
-  function switchTo(sid) {
+  // ── pop-out windows ──────────────────────────────────────────────────────
+  //
+  // A popped-out session leaves the grid and gets a window of its own, which can
+  // live on another monitor. The window is a second native one asked for through
+  // the bridge, pointed at this same local server with ?solo=<sid>; a plain
+  // browser has no bridge, so it falls back to window.open and still works when
+  // the page is opened outside the app.
+  //
+  // The session keeps running either way - a window is a way of looking at a
+  // shell, not the shell itself - so closing one simply returns it to the grid.
+  function popOut(sid) {
     if (!sid) return;
-    activeSid = sid;
+    const url = '/?solo=' + encodeURIComponent(sid);
+    const bridge = window.webkit && window.webkit.messageHandlers
+                && window.webkit.messageHandlers.mts;
+    if (bridge) {
+      const s = sessions.find(x => x.id === sid);
+      bridge.postMessage({ cmd: 'popOut', sid, url, title: s ? s.name : sid });
+    } else if (!window.open(url, 'mts-' + sid, 'width=900,height=600')) {
+      toast('Could not open a window for that session');
+      return;
+    }
+    popped.add(sid);
+    for (let i = 0; i < tiles.length; i++) if (tiles[i] === sid) tiles[i] = null;
+    saveLayout();
+    render();
+    toast('Popped out - close that window to put it back');
+  }
+
+  /// Called by a pop-out window as it closes, and by the native side when its
+  /// window goes away, so the session returns to the wall it came from.
+  window.__mtsPopBack = function (sid) {
+    if (!popped.has(sid)) return;
+    popped.delete(sid);
+    if (!tiles.includes(sid)) {
+      const free = tiles.slice(0, layout).indexOf(null);
+      if (free >= 0) tiles[free] = sid;
+    }
+    saveLayout();
+    render();
+  };
+
+  // ── drawing the wall ─────────────────────────────────────────────────────
+
+  /// Make sure a session has a live xterm behind it. Panes outlive the tile they
+  /// sit in, so scrollback survives being moved, hidden and shown again.
+  function ensurePane(sid) {
     let pane = panes[sid];
     if (!pane) {
       const s = sessions.find(x => x.id === sid);
       pane = makePane(sid, s ? s.name : sid);
-    } else if (!pane.connected && !pane.exited) {
-      // A session whose stream had dropped (server restart etc.) reconnects on
-      // focus; tmux redraws the current screen.
-      connectPane(sid);
     }
-    placeholder.style.display = 'none';
-    for (const id in panes) panes[id].container.style.display = (id === sid) ? 'block' : 'none';
-    // fit after the container becomes visible (0-size fit is a no-op)
+    return pane;
+  }
+
+  /// Refit every visible pane. Called after anything that changes pane geometry;
+  /// a fit against a hidden, zero-size element is a no-op, so this is safe to
+  /// call more often than strictly needed.
+  function refitAll() {
+    for (const sid of streamSids()) {
+      const pane = panes[sid];
+      if (pane) { try { pane.fit.fit(); } catch {} }
+    }
+  }
+
+  function renderGrid() {
+    termHost.dataset.layout = String(layout);
+    // Detach the panes before wiping the tiles, or emptying innerHTML would take
+    // their xterms with it and every session would lose its screen on a relayout.
+    for (const sid in panes) {
+      const c = panes[sid].container;
+      if (c.parentNode) c.parentNode.removeChild(c);
+    }
+    for (const t of [...termHost.querySelectorAll('.tile')]) t.remove();
+
+    for (let i = 0; i < layout; i++) {
+      const sid = tiles[i];
+      const pane = sid ? ensurePane(sid) : null;
+      const s = sid ? sessions.find(x => x.id === sid) : null;
+
+      const tile = document.createElement('div');
+      tile.className = 'tile' + (i === focused ? ' focused' : '');
+      if (sid && states[sid] === 'attention') tile.classList.add('attention');
+      tile.dataset.i = String(i);
+
+      if (pane) {
+        const head = document.createElement('div');
+        head.className = 'tile-head';
+        head.innerHTML =
+            '<span class="sdot ' + dotClass(sid) + '"></span>'
+          + '<span class="nm"></span>'
+          + (sid.startsWith('vps:') ? '<span class="where">vps</span>' : '')
+          + '<span class="key">&#8984;' + (i + 1) + '</span>'
+          + '<button data-act="pop" title="Open in its own window">&#8599;</button>'
+          + '<button data-act="clear" title="Take it out of this pane">&#10005;</button>';
+        head.querySelector('.nm').textContent = s ? s.name : pane.name;
+        head.querySelector('[data-act="pop"]').addEventListener('click', ev => {
+          ev.stopPropagation(); popOut(sid);
+        });
+        head.querySelector('[data-act="clear"]').addEventListener('click', ev => {
+          ev.stopPropagation();
+          tiles[i] = null;
+          saveLayout();
+          render();
+        });
+        // Dragging a pane's header moves that session to another pane.
+        head.draggable = true;
+        head.addEventListener('dragstart', ev => {
+          dragSid = sid;
+          ev.dataTransfer.setData('text/plain', sid);
+          ev.dataTransfer.effectAllowed = 'move';
+        });
+        head.addEventListener('dragend', () => { dragSid = null; });
+        tile.appendChild(head);
+
+        const body = document.createElement('div');
+        body.className = 'tile-body';
+        body.appendChild(pane.container);
+        tile.appendChild(body);
+      } else {
+        const body = document.createElement('div');
+        body.className = 'tile-body';
+        body.innerHTML = '<div class="empty"><div class="big">&#8862;</div>'
+                       + '<div>Drop a session here</div></div>';
+        tile.appendChild(body);
+      }
+
+      tile.addEventListener('mousedown', () => setFocus(i));
+      tile.addEventListener('dragover', ev => {
+        ev.preventDefault(); tile.classList.add('dragover');
+      });
+      tile.addEventListener('dragleave', () => tile.classList.remove('dragover'));
+      tile.addEventListener('drop', ev => {
+        ev.preventDefault();
+        tile.classList.remove('dragover');
+        const dropped = ev.dataTransfer.getData('text/plain') || dragSid;
+        if (dropped) place(dropped, i);
+      });
+      termHost.appendChild(tile);
+    }
+
+    // The placeholder belongs to an empty wall, not to an empty pane - a pane
+    // says "drop a session here" on its own.
+    placeholder.style.display = tiles.slice(0, layout).some(Boolean) ? 'none' : 'flex';
+
+    for (const b of document.querySelectorAll('.lay'))
+      b.classList.toggle('on', Number(b.dataset.l) === layout);
+
+    activeSid = tiles[focused] || null;
+    // Fit before the stream opens: the server answers a new connection with a
+    // full repaint, and a repaint written at the wrong width has to be reflowed,
+    // which is what leaves shifted and overlapping text behind.
     requestAnimationFrame(() => {
-      try { pane.fit.fit(); } catch {}
-      pane.term.focus();
+      refitAll();
+      syncStream();
+      const pane = panes[activeSid];
+      if (pane) pane.term.focus();
     });
+  }
+
+  /// A structural change: the layout, which session sits where, or the focus.
+  /// Rebuilds the tiles, which re-parents every xterm, so it is not what a poll
+  /// should call.
+  function render() {
+    renderGrid();
     renderSessions();
     renderHead();
+    planOnSwitch();
+  }
+
+  /// What the polls call. The status of a session changes every couple of
+  /// seconds; the shape of the wall does not. Rebuilding the grid on every poll
+  /// would tear each xterm out of the DOM and refit it several times a minute -
+  /// visible as flicker, and far more expensive than the update is worth. So the
+  /// live bits are written in place instead.
+  function updateTiles() {
+    for (const tile of termHost.querySelectorAll('.tile')) {
+      const i = Number(tile.dataset.i);
+      const sid = tiles[i];
+      tile.classList.toggle('focused', i === focused);
+      // With four panes visible, a session that needs you says so on its own
+      // border - the sidebar dot is no longer where the eye is.
+      tile.classList.toggle('attention', !!sid && states[sid] === 'attention');
+      if (!sid) continue;
+      const dot = tile.querySelector('.tile-head .sdot');
+      if (dot) dot.className = 'sdot ' + dotClass(sid);
+      const nm = tile.querySelector('.tile-head .nm');
+      const s = sessions.find(x => x.id === sid);
+      if (nm && s && nm.textContent !== s.name) nm.textContent = s.name;
+    }
+  }
+
+  function renderLive() {
+    updateTiles();
+    renderSessions();
+    renderHead();
+  }
+
+  /// Put a session in a pane. Putting it in one it already occupies elsewhere
+  /// swaps the two, so dragging rearranges rather than duplicates - the same
+  /// session in two panes would be two views of one shell fighting over its size.
+  function place(sid, i) {
+    if (!sid || i >= layout) return;
+    const was = tiles.indexOf(sid);
+    if (was === i) { setFocus(i); return; }
+    if (was >= 0) tiles[was] = tiles[i];
+    tiles[i] = sid;
+    // A session cannot be in a pane and in its own window at once.
+    if (popped.has(sid)) popped.delete(sid);
+    focused = i;
+    savePref('active', sid);
+    saveLayout();
+    render();
+  }
+
+  function setFocus(i) {
+    if (i >= layout || i === focused) return;
+    focused = i;
+    activeSid = tiles[focused] || null;
+    if (activeSid) savePref('active', activeSid);
+    saveLayout();
+    render();
+  }
+
+  /// Growing the wall fills the new panes with sessions that are not on screen
+  /// yet, so switching to a four-up does something useful instead of showing
+  /// three empty boxes.
+  function setLayout(n) {
+    if (![1, 2, 3, 4].includes(n)) return;
+    layout = n;
+    for (let i = 0; i < layout; i++) {
+      if (tiles[i]) continue;
+      const next = orderedSessions().find(
+        s => !tiles.includes(s.id) && !popped.has(s.id));
+      tiles[i] = next ? next.id : null;
+    }
+    if (focused >= layout) focused = layout - 1;
+    saveLayout();
+    render();
+  }
+
+  /// Every session in the order the sidebar draws them, local before VPS.
+  function orderedSessions() {
+    const s = shownSections();
+    return [...s.local, ...s.vps];
+  }
+
+  // ── switching the active session ─────────────────────────────────────────
+  /// Opening a session means putting it in a pane: the one it is already in if
+  /// it has one, otherwise the first free pane.
+  function switchTo(sid) {
+    if (!sid) return;
+    const at = tiles.indexOf(sid);
+    if (at >= 0 && at < layout) { setFocus(at); return; }
+    place(sid, firstFreeTile());
   }
 
   // ── header + status chip ─────────────────────────────────────────────────
@@ -369,6 +1399,179 @@
     chipEl.innerHTML = '<span style="color:' + stateColor(st) + '">&#9679;</span> ' + label;
   }
 
+  // ── preview panel ────────────────────────────────────────────────────────
+  // One tabbed panel beside the terminal for anything a session produces:
+  //
+  //   plan  /farm writes plans/<slug>/plan.html, then shared/term-plan stamps
+  //         "<nonce>:<path>" onto the session's tmux @webplan option
+  //   file  shared/term-show stamps @webfile the same way, for any file
+  //   link  a URL in the output, clicked (xterm's web-links addon)
+  //
+  // The two stamps arrive on the states poll, which is the only signal that
+  // either is ready. The app had both available and did nothing with them, so
+  // plans and artefacts were being produced and were unreachable from here.
+  // The nonce is what makes re-stamping the same path re-open it.
+  const planPane  = document.getElementById('planPane');
+  const planFrame = document.getElementById('planFrame');
+  const planTabs  = document.getElementById('planTabs');
+  const btnPlan   = document.getElementById('btnPlan');
+
+  let plans = {}, files = {};   // sid -> "<nonce>:<path>", straight from the poll
+  let stampSeen = {};           // "<kind>:<sid>" -> the stamp already acted on
+  let stampPrimed = false;      // has the first poll been recorded yet?
+  let tabs = [];                // [{id, title, url}] - shared across sessions
+  let tabActive = null;
+
+  function splitStamp(raw) {
+    const i = (raw || '').indexOf(':');
+    return i === -1 ? { nonce: '', path: raw || '' }
+                    : { nonce: raw.slice(0, i), path: raw.slice(i + 1) };
+  }
+
+  /// The nonce rides in the URL so a re-stamp reloads the frame while an
+  /// unchanged one does not.
+  function stampUrl(endpoint, sid, raw) {
+    const { nonce, path } = splitStamp(raw);
+    if (!path) return '';
+    return endpoint + '?path=' + encodeURIComponent(path)
+         + (sid.startsWith('vps:') ? '&host=vps' : '')
+         + (nonce ? '&n=' + encodeURIComponent(nonce) : '');
+  }
+  const planUrl = sid => stampUrl('/api/terminal/plan', sid, plans[sid]);
+  const fileUrl = sid => stampUrl('/api/terminal/file', sid, files[sid]);
+
+  const planName = p => p.replace(/^plans\//, '').replace(/\/[^/]*\.html$/, '');
+  const fileName = p => p.split('/').pop() || p;
+
+  /// Opening or closing the preview panel changes the width of every pane, not
+  /// just the focused one, so the whole wall re-fits.
+  function refitActive() {
+    requestAnimationFrame(refitAll);
+  }
+
+  function openTab(id, title, url) {
+    if (!url) return;
+    const existing = tabs.find(t => t.id === id);
+    if (existing) { existing.title = title; existing.url = url; }
+    else tabs.push({ id, title, url });
+    tabActive = id;
+    planPane.classList.add('open');
+    renderTabs();
+    showTab();
+    refitActive();
+  }
+
+  function closeTab(id) {
+    const i = tabs.findIndex(t => t.id === id);
+    if (i === -1) return;
+    tabs.splice(i, 1);
+    if (!tabs.length) { hidePreview(); tabActive = null; planTabs.innerHTML = ''; return; }
+    if (tabActive === id) tabActive = tabs[Math.min(i, tabs.length - 1)].id;
+    renderTabs();
+    showTab();
+  }
+
+  function hidePreview() {
+    planPane.classList.remove('open');
+    planFrame.setAttribute('src', 'about:blank');
+    refitActive();
+  }
+
+  function showTab() {
+    const t = tabs.find(x => x.id === tabActive);
+    if (!t) return;
+    if (planFrame.getAttribute('src') !== t.url) planFrame.setAttribute('src', t.url);
+  }
+
+  function renderTabs() {
+    planTabs.innerHTML = '';
+    for (const t of tabs) {
+      const b = document.createElement('button');
+      b.className = 'ptab' + (t.id === tabActive ? ' active' : '');
+      b.title = t.title;
+      const l = document.createElement('span');
+      l.className = 'ptab-label';
+      l.textContent = t.title;
+      const x = document.createElement('span');
+      x.className = 'ptab-x';
+      x.innerHTML = '&#10005;';
+      x.addEventListener('click', ev => { ev.stopPropagation(); closeTab(t.id); });
+      b.appendChild(l); b.appendChild(x);
+      b.addEventListener('click', () => { tabActive = t.id; renderTabs(); showTab(); });
+      planTabs.appendChild(b);
+    }
+  }
+
+  /// A term-link URL points at the box's dashboard, whose file endpoint wants a
+  /// token this page does not have and should not carry. Route those through
+  /// our own proxy, which holds it; anything else loads as it stands.
+  function previewUrlFor(raw) {
+    try {
+      const u = new URL(raw, location.href);
+      if (vpsInfo.host && u.host === vpsInfo.host && u.pathname === '/api/terminal/file') {
+        return '/api/terminal/file?host=vps&path='
+             + encodeURIComponent(u.searchParams.get('path') || '');
+      }
+      return raw;
+    } catch { return raw; }
+  }
+
+  function openLink(raw) {
+    let label = raw;
+    try {
+      const u = new URL(raw, location.href);
+      label = decodeURIComponent((u.searchParams.get('path') || u.pathname)
+                                 .split('/').pop() || '') || u.host;
+    } catch {}
+    openTab('link:' + raw, label, previewUrlFor(raw));
+  }
+
+  /// Called on every states poll. Only a stamp that CHANGES opens a tab, and
+  /// only for the session being watched, so something landing in a background
+  /// session never yanks the panel away from what is in front of you.
+  ///
+  /// The first poll only records what it finds, or everything stamped days ago
+  /// would pop open on launch. It records the empty stamps too: a session with
+  /// nothing yet is precisely the one about to produce its first, and skipping
+  /// those made that first one look already-seen - which left the panel shut
+  /// for the case that matters most.
+  function syncStamps() {
+    const sweep = (map, kind, url, name) => {
+      for (const sid in map) {
+        const stamp = map[sid] || '';
+        const key = kind + ':' + sid;
+        if (!stampPrimed) { stampSeen[key] = stamp; continue; }
+        if (stampSeen[key] === stamp) continue;
+        stampSeen[key] = stamp;
+        if (stamp && sid === activeSid) openTab(key, name(splitStamp(stamp).path), url(sid));
+      }
+    };
+    sweep(plans, 'plan', planUrl, planName);
+    sweep(files, 'file', fileUrl, fileName);
+    stampPrimed = true;
+    planOnSwitch();
+  }
+
+  /// The button is only worth showing when this session has actually made
+  /// something, or when there is a panel to bring back.
+  function planOnSwitch() {
+    const has = splitStamp(plans[activeSid]).path || splitStamp(files[activeSid]).path;
+    btnPlan.style.display = (has || tabs.length) ? '' : 'none';
+  }
+
+  btnPlan.addEventListener('click', () => {
+    if (planPane.classList.contains('open')) { hidePreview(); return; }
+    const p = planUrl(activeSid), f = fileUrl(activeSid);
+    if (p) openTab('plan:' + activeSid, planName(splitStamp(plans[activeSid]).path), p);
+    else if (f) openTab('file:' + activeSid, fileName(splitStamp(files[activeSid]).path), f);
+    else if (tabs.length) { planPane.classList.add('open'); renderTabs(); showTab(); refitActive(); }
+  });
+  document.getElementById('planClose').addEventListener('click', hidePreview);
+  document.getElementById('planPop').addEventListener('click', () => {
+    const t = tabs.find(x => x.id === tabActive);
+    if (t) window.open(t.url, '_blank');
+  });
+
   // ── sidebar ──────────────────────────────────────────────────────────────
   // Status classes/colours mirror the :3333 dashboard: green = done/waiting for
   // you, yellow = working or looping, red = needs you, grey = offline.
@@ -384,12 +1587,145 @@
 
   let renaming = false;   // true while an inline rename is open - pauses re-render
 
+  // ── list layout: manual order + the saved-for-later folder ───────────────
+  // Both are a view of the list rather than anything the sessions carry, and
+  // neither the box nor tmux has an opinion about them, so they live in
+  // localStorage. A saved session keeps running exactly as before - stashing it
+  // only takes it out of the way.
+  function loadPref(key, fallback) {
+    try {
+      const v = JSON.parse(localStorage.getItem('mts.' + key));
+      return v === null || v === undefined ? fallback : v;
+    } catch { return fallback; }
+  }
+  function savePref(key, val) {
+    try { localStorage.setItem('mts.' + key, JSON.stringify(val)); } catch {}
+  }
+
+  let sessOrder = loadPref('order', []);            // sids, in the dragged order
+  let savedSids = new Set(loadPref('saved', []));
+  let savedOpen = loadPref('savedOpen', false);
+
+  const isSaved = sid => savedSids.has(sid);
+
+  /// Sessions never dragged keep their natural order and sit after the ones
+  /// that were (Array#sort is stable, so returning 0 leaves them alone).
+  function byUserOrder(a, b) {
+    const ia = sessOrder.indexOf(a.id), ib = sessOrder.indexOf(b.id);
+    if (ia === -1 && ib === -1) return 0;
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  }
+
+  /// The list exactly as it is drawn - local first, then VPS, each in the order
+  /// the rows were dragged into. Anything that has to pick "the first session"
+  /// picks the one the eye lands on, not whatever tmux happened to list first.
+  function shownSections() {
+    const shown = sessions.filter(s => !isSaved(s.id));
+    return {
+      local: shown.filter(s => s.host !== 'vps').sort(byUserOrder),
+      vps:   shown.filter(s => s.host === 'vps').sort(byUserOrder),
+      saved: sessions.filter(s =>  isSaved(s.id)).sort(byUserOrder),
+    };
+  }
+
+  function firstShown() {
+    const s = shownSections();
+    return s.local[0] || s.vps[0] || null;
+  }
+
+  function setSaved(sid, on) {
+    if (on) savedSids.add(sid); else savedSids.delete(sid);
+    savePref('saved', [...savedSids]);
+    if (on) {
+      // Stashed means off the wire too: drop the pane rather than hold a stream
+      // open for days. tmux keeps the session running, and opening it again
+      // re-attaches and redraws.
+      destroyPane(sid);
+      if (activeSid === sid) {
+        activeSid = null;
+        const next = firstShown();
+        if (next) { switchTo(next.id); return; }
+        placeholder.style.display = 'flex';
+        renderHead();
+      }
+    }
+    renderSessions();
+  }
+
+  let dragSid = null;
+
+  function clearDropMarks() {
+    for (const el of sessListEl.querySelectorAll('.drop-before,.drop-after,.drop-in'))
+      el.classList.remove('drop-before', 'drop-after', 'drop-in');
+  }
+
+  /// Re-seed the order from what is currently on screen, so sessions the user
+  /// has never touched keep their places, then move the dragged one.
+  function applyDrop(fromSid, toSid, after) {
+    if (!fromSid || fromSid === toSid) return;
+    const order = [...sessListEl.querySelectorAll('.sess')].map(r => r.dataset.s);
+    const from = order.indexOf(fromSid);
+    if (from !== -1) order.splice(from, 1);
+    let at = order.indexOf(toSid);
+    if (at === -1) at = order.length;
+    else if (after) at += 1;
+    order.splice(at, 0, fromSid);
+    sessOrder = order;
+    savePref('order', sessOrder);
+    renderSessions();
+  }
+
+  /// Rows are drag handles for reordering and drag sources for the folder.
+  function makeDraggable(row, s) {
+    row.draggable = true;
+    row.addEventListener('dragstart', ev => {
+      dragSid = s.id;
+      row.classList.add('dragging');
+      ev.dataTransfer.effectAllowed = 'move';
+      // WebKit will not start a drag at all unless some data is attached.
+      try { ev.dataTransfer.setData('text/plain', s.id); } catch {}
+    });
+    row.addEventListener('dragend', () => {
+      dragSid = null;
+      row.classList.remove('dragging');
+      clearDropMarks();
+    });
+    row.addEventListener('dragover', ev => {
+      if (!dragSid || dragSid === s.id) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = 'move';
+      const r = row.getBoundingClientRect();
+      const after = ev.clientY > r.top + r.height / 2;
+      row.classList.toggle('drop-before', !after);
+      row.classList.toggle('drop-after', after);
+    });
+    row.addEventListener('dragleave', () => {
+      row.classList.remove('drop-before', 'drop-after');
+    });
+    row.addEventListener('drop', ev => {
+      ev.preventDefault();
+      const r = row.getBoundingClientRect();
+      const from = dragSid;
+      clearDropMarks();
+      // Dropping a stashed session among the live ones brings it back.
+      if (from && isSaved(from) && !isSaved(s.id)) setSaved(from, false);
+      applyDrop(from, s.id, ev.clientY > r.top + r.height / 2);
+    });
+  }
+
   // One session row. The id shown in the tag is the box-local one for a vps:
   // session (s.realid), so it matches what you see on the :3333 dashboard.
   function buildRow(s) {
+    const at = tiles.indexOf(s.id);
+    const onWall = at >= 0 && at < layout;
     const row = document.createElement('div');
-    row.className = 'sess' + (s.id === activeSid ? ' active' : '');
+    row.className = 'sess' + (s.id === activeSid ? ' active' : '')
+                           + (isSaved(s.id) ? ' saved' : '')
+                           + (onWall || popped.has(s.id) ? ' placed' : '');
     row.dataset.s = s.id;
+    makeDraggable(row, s);
 
     const dot = document.createElement('span');
     dot.className = 'sdot ' + dotClass(s.id);
@@ -398,11 +1734,23 @@
     nm.className = 'sname';
     nm.textContent = s.name;
 
+    row.appendChild(dot); row.appendChild(nm);
+
+    // Where the session is showing, if anywhere. With four panes on screen the
+    // list is no longer a list of one open session and several closed ones, so
+    // it has to say which pane you are looking at it in.
+    if (popped.has(s.id) || onWall) {
+      const where = document.createElement('span');
+      where.className = 'where';
+      where.textContent = popped.has(s.id) ? 'window' : 'pane ' + (at + 1);
+      row.appendChild(where);
+    }
+
     const tag = document.createElement('span');
     tag.className = 'stag';
     tag.textContent = (s.realid || s.id).slice(0, 4);
 
-    row.appendChild(dot); row.appendChild(nm); row.appendChild(tag);
+    row.appendChild(tag);
 
     row.addEventListener('click', () => {
       if (nm.getAttribute('contenteditable') === 'true') return;
@@ -450,15 +1798,56 @@
     return h;
   }
 
+  /// The saved-for-later folder. Always present, even empty, so there is
+  /// somewhere to drag a session to; click the header to fold it open or shut.
+  function savedHeader(count) {
+    const h = document.createElement('div');
+    h.className = 'sess-section sec-saved';
+
+    const caret = document.createElement('span');
+    caret.className = 'sec-caret';
+    caret.innerHTML = (savedOpen && count) ? '&#9660;' : '&#9654;';
+
+    const l = document.createElement('span');
+    l.className = 'sec-host';
+    l.textContent = 'Saved for later';
+
+    const c = document.createElement('span');
+    c.className = 'sec-count';
+    c.textContent = count;
+
+    h.appendChild(caret); h.appendChild(l); h.appendChild(c);
+
+    h.addEventListener('click', () => {
+      savedOpen = !savedOpen;
+      savePref('savedOpen', savedOpen);
+      renderSessions();
+    });
+    h.addEventListener('dragover', ev => {
+      if (!dragSid || isSaved(dragSid)) return;
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = 'move';
+      h.classList.add('drop-in');
+    });
+    h.addEventListener('dragleave', () => h.classList.remove('drop-in'));
+    h.addEventListener('drop', ev => {
+      ev.preventDefault();
+      const from = dragSid;
+      clearDropMarks();
+      if (from && !isSaved(from)) setSaved(from, true);
+    });
+    return h;
+  }
+
   function renderSessions() {
     if (renaming) return;   // never tear down the list mid-edit (would drop focus)
     sessListEl.innerHTML = '';
 
-    const localSessions = sessions.filter(s => s.host !== 'vps');
-    const vpsSessions   = sessions.filter(s => s.host === 'vps');
+    const { local: localSessions, vps: vpsSessions, saved } = shownSections();
     // Only split into sections once a VPS is in the picture; otherwise the list
-    // stays a flat local list, exactly as before.
-    const showSections  = vpsInfo.enabled || vpsSessions.length > 0;
+    // stays a flat local list, exactly as before. Based on every vps: session,
+    // not just the unstashed ones, so stashing the last one keeps the layout.
+    const showSections  = vpsInfo.enabled || sessions.some(s => s.host === 'vps');
 
     if (showSections) sessListEl.appendChild(sectionHeader('This Mac'));
     for (const s of localSessions) sessListEl.appendChild(buildRow(s));
@@ -476,6 +1865,9 @@
       }));
       for (const s of vpsSessions) sessListEl.appendChild(buildRow(s));
     }
+
+    sessListEl.appendChild(savedHeader(saved.length));
+    if (savedOpen) for (const s of saved) sessListEl.appendChild(buildRow(s));
 
     const running = sessions.filter(s => {
       const st = states[s.id];
@@ -527,6 +1919,9 @@
     // Only a local session can be handed over, and only when the box answers.
     document.getElementById('ctxSend').style.display =
       (s.host !== 'vps' && vpsInfo.enabled && vpsInfo.online) ? '' : 'none';
+    document.getElementById('ctxSave').innerHTML = isSaved(s.id)
+      ? '<span class="k">&#8617;</span> Restore from saved'
+      : '<span class="k">&#9776;</span> Save for later';
     ctxMenu.style.left = x + 'px';
     ctxMenu.style.top = y + 'px';
     ctxMenu.classList.add('open');
@@ -535,7 +1930,14 @@
     if (r.right > window.innerWidth)  ctxMenu.style.left = Math.max(4, x - r.width) + 'px';
     if (r.bottom > window.innerHeight) ctxMenu.style.top = Math.max(4, y - r.height) + 'px';
   }
-  function closeCtx() { ctxMenu.classList.remove('open'); ctxTarget = null; }
+  // Hiding the menu deliberately does NOT forget the row it was opened on.
+  // Every item reads ctxTarget and bails when it is null, so anything that
+  // hides the menu between the click landing and the handler running - a stray
+  // window blur, the dismiss-on-click below - used to turn the item into a
+  // silent no-op: menu opens, you click Close session, nothing happens at all.
+  // openCtx sets the target afresh, and the items are unreachable while hidden,
+  // so keeping it costs nothing.
+  function closeCtx() { ctxMenu.classList.remove('open'); }
 
   document.getElementById('ctxRename').addEventListener('click', () => {
     const t = ctxTarget; closeCtx();
@@ -596,6 +1998,18 @@
       () => sendToVps(t.s, false));
   });
 
+  // Stash or unstash. Nothing is stopped either way - a saved session goes on
+  // running, which is the point of keeping one for a few days.
+  document.getElementById('ctxSave').addEventListener('click', () => {
+    const t = ctxTarget; closeCtx();
+    if (!t) return;
+    const on = !isSaved(t.s.id);
+    setSaved(t.s.id, on);
+    if (on) { savedOpen = false; savePref('savedOpen', savedOpen); renderSessions(); }
+    toast(on ? 'Saved "' + t.s.name + '" for later'
+             : 'Restored "' + t.s.name + '"');
+  });
+
   document.getElementById('ctxClose').addEventListener('click', () => {
     const t = ctxTarget; closeCtx();
     if (!t) return;
@@ -611,6 +2025,8 @@
         }).then(() => refreshSessions()).catch(() => {});
       });
   });
+  // A click on the menu itself must never reach the window-level dismisser.
+  ctxMenu.addEventListener('click', ev => ev.stopPropagation());
   // dismiss on any click elsewhere, Escape, scroll or resize
   window.addEventListener('click', closeCtx);
   window.addEventListener('resize', closeCtx);
@@ -726,26 +2142,85 @@
       sessions = j.sessions || [];
       vpsInfo = j.vps || { enabled: false, online: false, host: '' };
     } catch { return; }
-    // drop panes for sessions that no longer exist
+    // "Gone" means the host that owns it said so. A vps: session drops off the
+    // listing every time the box blips, and treating that as death is what used
+    // to throw away its pane, forget its place in the list, and - worst of the
+    // three - move you into an unrelated session and mark that one instead.
     const live = new Set(sessions.map(s => s.id));
-    for (const id in panes) if (!live.has(id)) destroyPane(id);
-    // auto-select something if nothing is active
-    if (!activeSid || !live.has(activeSid)) {
-      if (sessions.length) switchTo(sessions[0].id);
-      else { activeSid = null; placeholder.style.display = 'flex'; renderHead(); }
+    const settled = id => (id.startsWith('vps:') ? vpsInfo.online : true) && !live.has(id);
+
+    for (const id in panes) if (settled(id)) destroyPane(id);
+
+    if ([...savedSids].some(settled)) {
+      for (const id of [...savedSids]) if (settled(id)) savedSids.delete(id);
+      savePref('saved', [...savedSids]);
     }
-    renderSessions();
-    if (activeSid) renderHead();
+    if (sessOrder.some(settled)) {
+      sessOrder = sessOrder.filter(id => !settled(id));
+      savePref('order', sessOrder);
+    }
+
+    // Pick a session only when there genuinely is none - never off a blip, and
+    // never off the active one merely being stashed for later. On a fresh load
+    // that means the session you were last in, if it is still there; otherwise
+    // the first row in the list as drawn, which is the one you would have
+    // clicked yourself.
+    // The first listing has to build the grid; after that only a change to the
+    // wall does, because renderGrid re-parents every xterm.
+    const first = !booted;
+    booted = true;
+
+    // A solo window shows the one session it was opened for and nothing else -
+    // it must never adopt another when that session ends, or closing a shell
+    // would silently hand its window to an unrelated one.
+    if (soloSid) { if (first) render(); else renderLive(); return; }
+
+    // Restore the wall, not just one session. A remembered pane pointing at a
+    // session that has since ended is an empty pane, not a broken one.
+    let pruned = false;
+    for (let i = 0; i < tiles.length; i++) {
+      if (tiles[i] && (settled(tiles[i]) || isSaved(tiles[i]))) {
+        tiles[i] = null;
+        pruned = true;
+      }
+    }
+
+    // Open something on the first listing only. An empty wall later on is one
+    // you emptied - with the pane's own ✕, or by closing the last session - and
+    // refilling it on the next poll would make that button do nothing you could
+    // see. On a fresh load that means the session you were last in, if it is
+    // still there; otherwise the first row as drawn, which is the one you would
+    // have clicked yourself.
+    if (first && !tiles.slice(0, layout).some(Boolean)) {
+      const remembered = loadPref('active', null);
+      const wanted = sessions.find(
+        s => s.id === remembered && !isSaved(s.id) && !settled(s.id));
+      const pick = wanted || firstShown();
+      if (pick) {
+        tiles[focused < layout ? focused : 0] = pick.id;
+        pruned = true;
+      }
+    }
+    if (!tiles.slice(0, layout).some(Boolean)) activeSid = null;
+
+    // Only rebuild the grid when the wall actually changed - this runs on a
+    // poll, and renderGrid re-parents every xterm.
+    if (pruned || first) { saveLayout(); render(); }
+    else renderLive();
   }
 
   async function refreshStates() {
     try {
       const r = await fetch('/api/terminal/states');
       const j = await r.json();
-      if (j.ok) states = j.states || {};
+      if (j.ok) {
+        states = j.states || {};
+        plans  = j.plans  || {};
+        files  = j.files  || {};
+      }
     } catch { return; }
-    renderSessions();
-    if (activeSid) renderHead();
+    syncStamps();
+    renderLive();
   }
 
   // ── new session ──────────────────────────────────────────────────────────
@@ -769,24 +2244,620 @@
   }
   btnNew.addEventListener('click', () => newSession());
 
+  // Unconditional: the stream that most needs this button is the one still
+  // claiming to be connected through a socket that stopped delivering.
   document.getElementById('btnReload').addEventListener('click', () => {
-    const pane = panes[activeSid];
-    if (pane && !pane.connected) { pane.exited = false; connectPane(activeSid); }
-    if (pane) { try { pane.fit.fit(); } catch {} }
+    forceReconnect();
+    refitAll();
   });
 
-  // keep the active pane fitted to the window
-  new ResizeObserver(() => {
-    const pane = panes[activeSid];
-    if (pane) { try { pane.fit.fit(); } catch {} }
-  }).observe(termHost);
+  // keep every visible pane fitted to its tile
+  new ResizeObserver(() => refitAll()).observe(termHost);
+
+  // ── the wall: layouts, focus, pop-out ────────────────────────────────────
+  document.getElementById('layouts').addEventListener('click', ev => {
+    const b = ev.target.closest('.lay');
+    if (b) setLayout(Number(b.dataset.l));
+  });
+
+  document.getElementById('btnPop').addEventListener('click', () => {
+    if (!activeSid) { toast('That pane is empty - open a session in it first'); return; }
+    popOut(activeSid);
+  });
+
+  // Cmd-1..4 focuses a pane, Cmd-Shift-O pops the focused one out. Bound on the
+  // window in the capture phase because xterm has the keyboard: a terminal takes
+  // every keystroke it is given, so a listener that waits its turn never runs.
+  window.addEventListener('keydown', ev => {
+    if (!(ev.metaKey || ev.ctrlKey)) return;
+    if (!ev.shiftKey && ev.key >= '1' && ev.key <= '4') {
+      const i = Number(ev.key) - 1;
+      if (i < layout) { ev.preventDefault(); ev.stopPropagation(); setFocus(i); }
+      return;
+    }
+    if (ev.shiftKey && (ev.key === 'O' || ev.key === 'o')) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (activeSid) popOut(activeSid);
+    }
+  }, true);
+
+  // ── surviving sleep ──────────────────────────────────────────────────────
+  // Everything the machine had open across a sleep is suspect on the way out,
+  // so re-establish rather than trust. Called from the wall-clock detector
+  // below and from the app's NSWorkspace wake notification, which arrives even
+  // when the window never lost focus; running twice is harmless.
+  function onWake() {
+    reviveStreams(STALE_MS, true);
+    kickPolls();
+  }
+  window.__mtsWake = onWake;
+
+  // A jump in wall-clock between ticks means we were asleep. This is the one
+  // signal that does not depend on the window being hidden or losing focus -
+  // a full-screen app left in the foreground gets neither.
+  let lastTick = Date.now();
+  setInterval(() => {
+    const now = Date.now();
+    const slept = now - lastTick > 20000;
+    lastTick = now;
+    if (slept) onWake();
+  }, 2000);
+
+  // Backstop for stalls with no wake event behind them (server restart, box
+  // dropping the relay, a socket that just rots).
+  setInterval(() => reviveStreams(STALL_MS), 5000);
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    reviveStreams(STALE_MS, true);
+    kickPolls();   // hidden windows poll every 20s; come back to a fresh list
+  });
+  window.addEventListener('focus', () => reviveStreams(STALE_MS, true));
+  window.addEventListener('online', () => reviveStreams(0, true));
+
+  // ── first run ────────────────────────────────────────────────────────────
+  // The app ships with nobody's folder and nobody's login. This screen collects
+  // both before anything else runs; the server enforces the same rule, so a
+  // stale tab cannot open a shell behind it either.
+
+  const setupSheet    = document.getElementById('setupSheet');
+  const settingsSheet = document.getElementById('settingsSheet');
+  const setupMsg      = document.getElementById('setupMsg');
+  const setupNext     = document.getElementById('setupNext');
+  const setupBack     = document.getElementById('setupBack');
+  const folderInput   = document.getElementById('folderInput');
+  const folderBrowse  = document.getElementById('folderBrowse');
+
+  const STEPS = ['checks', 'folder', 'signin', 'done'];
+  let setupState = null;
+  let stepIdx = 0;
+  let loginSid = null;      // the session `claude auth login` is running in
+  let loginTerm = null;     // its live terminal inside the card
+  let authPoll = null;
+  let appStarted = false;
+
+  async function fetchSetupState(force) {
+    const r = await fetch('/api/setup/state' + (force ? '?force=1' : ''));
+    setupState = await r.json();
+    return setupState;
+  }
+
+  async function postJSON(url, body) {
+    const r = await fetch(url, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {})
+    });
+    return r.json();
+  }
+
+  function setMsg(el, text, kind) {
+    el.textContent = text || '';
+    el.className = 'msg' + (kind ? ' ' + kind : '');
+  }
+
+  // ── native folder picker ──
+  // Inside the .app a real NSOpenPanel is one message away; in a browser there
+  // is no such thing, so the card falls back to its own folder list.
+  const hasNativePicker = !!(window.webkit && window.webkit.messageHandlers
+                             && window.webkit.messageHandlers.mts);
+  let pickResolve = null;
+  window.__mtsFolderPicked = path => {
+    if (pickResolve) { pickResolve(path || ''); pickResolve = null; }
+  };
+  function pickFolderNative(start) {
+    return new Promise(resolve => {
+      pickResolve = resolve;
+      window.webkit.messageHandlers.mts.postMessage(
+        { cmd: 'pickFolder', start: start || '' });
+    });
+  }
+
+  async function browseInto(path, input, listEl) {
+    const r = await fetch('/api/setup/browse?path=' + encodeURIComponent(path));
+    const j = await r.json();
+    if (!j.ok) { listEl.innerHTML = ''; return; }
+    input.value = j.path;
+    listEl.classList.add('open');
+    listEl.innerHTML = '';
+    const add = (label, target) => {
+      const b = document.createElement('button');
+      b.textContent = label;
+      b.addEventListener('click', () => browseInto(target, input, listEl));
+      listEl.appendChild(b);
+    };
+    if (j.parent) add('..', j.parent);
+    for (const d of j.dirs) add(d.name + '/', d.path);
+    if (!j.dirs.length && !j.parent) add('(no sub-folders)', j.path);
+  }
+
+  async function chooseFolder(input, listEl) {
+    if (hasNativePicker) {
+      const picked = await pickFolderNative(input.value);
+      if (picked) { input.value = picked; listEl.classList.remove('open'); }
+      return;
+    }
+    if (listEl.classList.contains('open')) { listEl.classList.remove('open'); return; }
+    await browseInto(input.value || '~', input, listEl);
+  }
+
+  // ── the sign-in terminal, live inside the card ──
+  // A deliberately small, standalone pane: the main app's panes are tied to the
+  // session that is on screen, and this one is on screen while no app exists.
+  function openLoginTerm(sid) {
+    const host = document.getElementById('loginTerm');
+    host.classList.add('open');
+    const term = new Terminal({
+      cursorBlink: true, fontSize: 12, fontFamily: TERM_FONT,
+      theme: TERM_THEME, allowProposedApi: true,
+    });
+    const fit = new FitAddon.FitAddon();
+    term.loadAddon(fit);
+    try {
+      // The login URL Claude prints is the whole point of this pane, so make it
+      // clickable - the app hands window.open to the real browser.
+      term.loadAddon(new WebLinksAddon.WebLinksAddon(
+        (ev, uri) => window.open(uri, '_blank')));
+    } catch {}
+    term.open(host);
+    const refit = () => {
+      try { fit.fit(); sendResize(sid, term.cols, term.rows); } catch {}
+    };
+    setTimeout(refit, 40);
+    term.onData(d => fetch('/api/terminal/input', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid, data: d })
+    }).catch(() => {}));
+
+    const ctrl = new AbortController();
+    fetch('/api/terminal/stream?sid=' + encodeURIComponent(sid), { signal: ctrl.signal })
+      .then(res => {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = '';
+        (function pump() {
+          reader.read().then(({ done, value }) => {
+            if (done) return;
+            buf += decoder.decode(value, { stream: true });
+            const lines = buf.split('\n');
+            buf = lines.pop();
+            for (const line of lines) {
+              if (!line.startsWith('data: ')) continue;
+              let evt;
+              try { evt = JSON.parse(line.slice(6)); } catch { continue; }
+              if (evt.type === 'output' || evt.type === 'replay') {
+                term.write(Uint8Array.from(atob(evt.data), c => c.charCodeAt(0)));
+              }
+            }
+            pump();
+          }).catch(() => {});
+        })();
+      }).catch(() => {});
+
+    const ro = new ResizeObserver(refit);
+    ro.observe(host);
+    return {
+      stop() {
+        try { ctrl.abort(); } catch {}
+        ro.disconnect();
+        try { term.dispose(); } catch {}
+        host.classList.remove('open');
+      }
+    };
+  }
+
+  function stopAuthPoll() { clearInterval(authPoll); authPoll = null; }
+
+  function startAuthPoll() {
+    stopAuthPoll();
+    authPoll = setInterval(async () => {
+      try { await fetchSetupState(true); } catch { return; }
+      renderStep();
+      if (setupState.claude.loggedIn) stopAuthPoll();
+    }, 4000);
+  }
+
+  // ── rendering ──
+  function renderChecks() {
+    const cl = setupState.claude, tm = setupState.tmux;
+    const claudeRow = document.getElementById('rowClaude');
+    claudeRow.querySelector('.rdot').className = 'rdot ' + (cl.installed ? 'good' : 'bad');
+    claudeRow.querySelector('.rnote').innerHTML = cl.installed
+      ? 'Found' + (cl.version ? ' - ' + cl.version : '') + '<br>' + cl.path
+      : 'Not installed. Open Terminal and run:<code class="cmd">curl -fsSL https://claude.ai/install.sh | bash</code>';
+
+    const tmuxRow = document.getElementById('rowTmux');
+    tmuxRow.querySelector('.rdot').className = 'rdot ' + (tm.installed ? 'good' : 'bad');
+    tmuxRow.querySelector('.rnote').innerHTML = tm.installed
+      ? 'Found - ' + tm.path
+      : 'Not installed. Open Terminal and run:<code class="cmd">brew install tmux</code>';
+  }
+
+  function renderFolder() {
+    if (!folderInput.value) {
+      folderInput.value = setupState.home.path || setupState.home.default || '';
+    }
+  }
+
+  function renderSignin() {
+    const cl = setupState.claude;
+    const note = document.getElementById('loginNote');
+    const btn = document.getElementById('btnSignIn');
+    if (cl.loggedIn) {
+      note.style.display = 'flex';
+      note.classList.add('ok');
+      note.querySelector('.ltext').textContent = cl.email
+        ? 'Signed in as ' + cl.email + (cl.plan ? ' (' + cl.plan + ')' : '')
+        : 'Signed in to Claude Code on this Mac';
+      btn.textContent = loginSid ? 'Sign in as someone else' : 'Use a different account';
+    } else {
+      note.classList.remove('ok');
+      btn.textContent = loginSid ? 'Start over' : 'Sign in to Claude';
+    }
+  }
+
+  function renderDone() {
+    const cl = setupState.claude;
+    document.querySelector('#doneAccount .rnote').textContent = cl.email
+      ? cl.email + (cl.plan ? ' - ' + cl.plan + ' plan' : '')
+      : 'Claude Code is signed in on this Mac';
+    document.querySelector('#doneFolder .rnote').textContent = setupState.home.path;
+  }
+
+  function renderStep() {
+    const step = STEPS[stepIdx];
+    for (const el of document.querySelectorAll('#setupSheet .step')) {
+      el.classList.toggle('on', el.dataset.step === step);
+    }
+    for (const el of document.querySelectorAll('#setupRail .r')) {
+      const i = STEPS.indexOf(el.dataset.r);
+      el.classList.toggle('on', i === stepIdx);
+      el.classList.toggle('done', i < stepIdx);
+    }
+    setupBack.style.visibility = stepIdx === 0 ? 'hidden' : 'visible';
+
+    if (step === 'checks') {
+      renderChecks();
+      const ready = setupState.claude.installed && setupState.tmux.installed;
+      setupNext.disabled = !ready;
+      setupNext.textContent = 'Continue';
+      setMsg(setupMsg, ready ? '' : 'Install what is missing, then check again.',
+             ready ? '' : 'bad');
+    } else if (step === 'folder') {
+      renderFolder();
+      setupNext.disabled = false;
+      setupNext.textContent = 'Continue';
+    } else if (step === 'signin') {
+      renderSignin();
+      setupNext.disabled = !setupState.claude.loggedIn;
+      setupNext.textContent = 'Continue';
+      if (setupState.claude.loggedIn) {
+        setMsg(setupMsg, 'Signed in.', 'good');
+      } else if (loginSid) {
+        // A sign-in is in flight; the poll re-renders every few seconds and
+        // must not wipe out what the user is being told to do.
+        setMsg(setupMsg, 'Waiting for Claude to confirm the login...', '');
+      } else {
+        setMsg(setupMsg, 'This app runs on your own Claude subscription.', '');
+      }
+    } else if (step === 'done') {
+      renderDone();
+      setupNext.disabled = false;
+      setupNext.textContent = 'Start working';
+      setMsg(setupMsg, '', '');
+    }
+  }
+
+  async function openSetup() {
+    await fetchSetupState(true);
+    stepIdx = 0;
+    setupSheet.classList.add('open');
+    renderStep();
+  }
+
+  document.getElementById('btnRecheck').addEventListener('click', async () => {
+    setMsg(setupMsg, 'Checking...', '');
+    await fetchSetupState(true);
+    renderStep();
+  });
+
+  document.getElementById('btnPick').addEventListener(
+    'click', () => chooseFolder(folderInput, folderBrowse));
+
+  document.getElementById('btnSignIn').addEventListener('click', async () => {
+    const btn = document.getElementById('btnSignIn');
+    btn.disabled = true;
+    setMsg(setupMsg, 'Starting the sign-in...', '');
+    // Signing in again from this step means signing in as someone else, so the
+    // current login is dropped first - otherwise the CLI just says "already
+    // logged in" and nothing happens.
+    const res = await postJSON('/api/setup/login',
+                               { switch: setupState.claude.loggedIn });
+    btn.disabled = false;
+    if (!res.ok) { setMsg(setupMsg, res.error || 'Could not start the sign-in.', 'bad'); return; }
+    if (loginTerm) loginTerm.stop();
+    loginSid = res.sid;
+    loginTerm = openLoginTerm(loginSid);
+    const note = document.getElementById('loginNote');
+    note.style.display = 'flex';
+    note.classList.remove('ok');
+    note.querySelector('.ltext').textContent =
+      'Follow the login in your browser, then come back here.';
+    setMsg(setupMsg, 'Waiting for Claude to confirm the login...', '');
+    startAuthPoll();
+  });
+
+  setupBack.addEventListener('click', () => {
+    if (stepIdx === 0) return;
+    stepIdx--;
+    if (STEPS[stepIdx] !== 'signin') stopAuthPoll();   // each poll spawns a CLI call
+    renderStep();
+  });
+
+  setupNext.addEventListener('click', async () => {
+    const step = STEPS[stepIdx];
+    setupNext.disabled = true;
+    try {
+      if (step === 'folder') {
+        const res = await postJSON('/api/setup/folder', { path: folderInput.value });
+        if (!res.ok) { setMsg(setupMsg, res.error, 'bad'); return; }
+        setupState = res.state;
+        setMsg(setupMsg, '', '');
+      }
+      if (step === 'done') {
+        const res = await postJSON('/api/setup/complete', { sid: loginSid });
+        if (!res.ok) { setMsg(setupMsg, res.error, 'bad'); return; }
+        stopAuthPoll();
+        if (loginTerm) { loginTerm.stop(); loginTerm = null; }
+        loginSid = null;
+        setupSheet.classList.remove('open');
+        startApp();
+        return;
+      }
+      stepIdx = Math.min(stepIdx + 1, STEPS.length - 1);
+      if (STEPS[stepIdx] === 'signin' && !setupState.claude.loggedIn) startAuthPoll();
+      if (STEPS[stepIdx] !== 'signin') stopAuthPoll();
+      renderStep();
+    } finally {
+      if (setupSheet.classList.contains('open')) renderStep();
+    }
+  });
+
+  // ── settings ─────────────────────────────────────────────────────────────
+  const settingsMsg = document.getElementById('settingsMsg');
+  const setFolder   = document.getElementById('setFolder');
+  const setBrowse   = document.getElementById('setBrowseList');
+
+  function mapToText(map) {
+    return Object.entries(map || {}).map(([k, v]) => k + ' = ' + v).join('\n');
+  }
+  function textToMap(text) {
+    const out = {};
+    for (const line of (text || '').split('\n')) {
+      const i = line.indexOf('=');
+      if (i < 0) continue;
+      const k = line.slice(0, i).trim(), v = line.slice(i + 1).trim();
+      if (k && v) out[k] = v;
+    }
+    return out;
+  }
+
+  function renderSettings() {
+    const st = setupState;
+    setFolder.value = st.home.path;
+    document.getElementById('setConfigPath').textContent =
+      'Settings are stored per user at ' + st.configPath +
+      ' - the app itself carries none of this, so a copy handed to someone else starts blank.';
+
+    const acc = document.getElementById('setAccount');
+    acc.querySelector('.rdot').className = 'rdot ' + (st.claude.loggedIn ? 'good' : 'bad');
+    acc.querySelector('.rname').textContent = st.claude.loggedIn
+      ? (st.claude.email || 'Signed in') : 'Signed out';
+    acc.querySelector('.rnote').textContent = st.claude.loggedIn
+      ? [st.claude.plan && st.claude.plan + ' plan', st.claude.method].filter(Boolean).join(' - ')
+      : 'Claude Code has no login on this Mac. Sign in to use the terminal.';
+    document.getElementById('setSwitch').textContent =
+      st.claude.loggedIn ? 'Sign in as someone else' : 'Sign in';
+
+    const row = document.getElementById('setVpsRow');
+    row.querySelector('.rdot').className = 'rdot ' + (st.vps.configured ? 'good' : '');
+    row.querySelector('.rname').textContent = st.vps.configured
+      ? 'Connected to ' + st.vps.base_url : 'Not connected';
+    document.getElementById('setVpsToggle').textContent =
+      document.getElementById('setVpsForm').classList.contains('open') ? 'Hide' : 'Connect';
+    document.getElementById('setVpsUrl').value = st.vps.base_url || '';
+    document.getElementById('setVpsToken').value = '';
+    document.getElementById('setVpsToken').placeholder =
+      st.vps.hasToken ? 'unchanged - type to replace' : 'dashboard token';
+    document.getElementById('setVpsMap').value = mapToText(st.vps.path_map);
+    document.getElementById('setVpsSave').textContent =
+      st.vps.configured ? 'Save' : 'Connect';
+  }
+
+  /// What the server is holding open and how long its polls are taking. Here
+  /// because "it goes sticky after a while" is otherwise a matter of memory: a
+  /// status poll whose p95 has crept into seconds, or a pile of views nobody
+  /// closed, is the difference between a diagnosis and a guess.
+  async function renderHealth() {
+    const row = document.getElementById('setHealth');
+    const name = row.querySelector('.rname');
+    const note = row.querySelector('.rnote');
+    let h;
+    try {
+      h = await (await fetch('/api/terminal/health')).json();
+    } catch {
+      row.querySelector('.rdot').className = 'rdot bad';
+      name.textContent = 'The engine is not answering';
+      note.textContent = 'The terminal server behind this window has stopped responding.';
+      return;
+    }
+    const st = h.timings.states, se = h.timings.sessions, held = h.held || {};
+    const slow = (st && st.p95 > 1.5) || (se && se.p95 > 1.5) || held.dead_views > 0;
+    row.querySelector('.rdot').className = 'rdot ' + (slow ? 'bad' : 'good');
+    const mins = Math.round(h.uptime / 60);
+    name.textContent = slow ? 'Slower than it should be'
+                            : 'Healthy - running ' + (mins < 60 ? mins + ' min'
+                                : (mins / 60).toFixed(1) + ' h');
+    const ms = t => t ? Math.round(t.p50 * 1000) + 'ms typical, ' + Math.round(t.p95 * 1000) + 'ms slow' : '-';
+    note.textContent =
+      'Status poll: ' + ms(st) + '   ·   session list: ' + ms(se) + '\n'
+      + (held.views || 0) + ' terminals attached'
+      + (held.dead_views ? ' (' + held.dead_views + ' stale)' : '')
+      + ', ' + (held.subscribers || 0) + ' streams, ' + (held.threads || 0) + ' threads'
+      + (h.vps && h.vps.enabled
+          ? '\nVPS: ' + (h.vps.online
+              ? h.vps.sessions + ' sessions, last heard ' + h.vps.snapshot_age + 's ago'
+              : 'not answering') + ' (asked in the background, never in your way)'
+          : '');
+    note.style.whiteSpace = 'pre-line';
+  }
+
+  async function openSettings() {
+    await fetchSetupState(true);
+    renderSettings();
+    settingsSheet.classList.add('open');
+    setMsg(settingsMsg, '', '');
+    renderHealth();
+  }
+
+  document.getElementById('setHealthRefresh').addEventListener('click', renderHealth);
+
+  document.getElementById('btnSettings').addEventListener('click', openSettings);
+  document.getElementById('settingsClose').addEventListener(
+    'click', () => settingsSheet.classList.remove('open'));
+  document.getElementById('settingsDone').addEventListener(
+    'click', () => settingsSheet.classList.remove('open'));
+
+  document.getElementById('setPick').addEventListener(
+    'click', () => chooseFolder(setFolder, setBrowse));
+
+  document.getElementById('setFolderSave').addEventListener('click', async () => {
+    const res = await postJSON('/api/setup/folder', { path: setFolder.value });
+    if (!res.ok) { setMsg(settingsMsg, res.error, 'bad'); return; }
+    setupState = res.state;
+    setMsg(settingsMsg, 'New sessions will open in ' + res.state.home.path, 'good');
+  });
+
+  document.getElementById('setSwitch').addEventListener('click', async () => {
+    const res = await postJSON('/api/setup/login', { switch: setupState.claude.loggedIn });
+    if (!res.ok) { setMsg(settingsMsg, res.error || 'Could not start the sign-in.', 'bad'); return; }
+    // The sign-in runs in an ordinary session, so hand it to the main window and
+    // get out of the way - the browser handshake happens there.
+    settingsSheet.classList.remove('open');
+    await refreshSessions();
+    switchTo(res.sid);
+    toast('Signing in - follow the prompt in this session');
+  });
+
+  document.getElementById('setVpsToggle').addEventListener('click', () => {
+    const form = document.getElementById('setVpsForm');
+    form.classList.toggle('open');
+    document.getElementById('setVpsToggle').textContent =
+      form.classList.contains('open') ? 'Hide' : 'Connect';
+  });
+
+  document.getElementById('setVpsSave').addEventListener('click', async () => {
+    setMsg(settingsMsg, 'Testing the connection...', '');
+    const res = await postJSON('/api/setup/vps', {
+      base_url: document.getElementById('setVpsUrl').value,
+      token: document.getElementById('setVpsToken').value,
+      path_map: textToMap(document.getElementById('setVpsMap').value),
+    });
+    if (!res.ok) { setMsg(settingsMsg, res.error, 'bad'); return; }
+    setupState = res.state;
+    renderSettings();
+    setMsg(settingsMsg, 'Connected.', 'good');
+    refreshSessions();
+  });
+
+  document.getElementById('setVpsClear').addEventListener('click', async () => {
+    const res = await postJSON('/api/setup/vps', { base_url: '' });
+    if (!res.ok) { setMsg(settingsMsg, res.error, 'bad'); return; }
+    setupState = res.state;
+    renderSettings();
+    setMsg(settingsMsg, 'Disconnected.', 'good');
+    refreshSessions();
+  });
+
+  document.getElementById('setRerun').addEventListener('click', async () => {
+    await postJSON('/api/setup/reset', {});
+    settingsSheet.classList.remove('open');
+    openSetup();
+  });
 
   // ── boot ─────────────────────────────────────────────────────────────────
+  // Nothing polls, streams or opens a shell until setup is done - on a first
+  // run the only thing on screen is the setup card.
+  // ── polling ──────────────────────────────────────────────────────────────
+  // Each poll schedules its own next run rather than firing on a fixed
+  // interval. A fixed interval keeps firing while the previous request is still
+  // out, and every request in flight holds one of the browser's ~6 connections
+  // per origin. Once they are all held, a keystroke, a resize, closing a session
+  // or an upload just queues behind them - which is the app going sticky the
+  // longer it runs, with nothing actually broken behind it. Status got slower as
+  // sessions were added (it reads every one of them), so this was a matter of
+  // time rather than of luck.
+  const pollers = [];
+
+  function startPoll(fn, base) {
+    const p = { running: false, timer: null };
+    const run = async () => {
+      if (p.running) return;
+      p.running = true;
+      const t0 = Date.now();
+      try { await fn(); } catch {}
+      p.running = false;
+      // Slow answers earn a longer gap: on a busy machine we back off instead of
+      // piling on. A hidden window barely polls at all.
+      const took = Date.now() - t0;
+      const wait = document.hidden ? 20000
+                                   : Math.min(base * 5, Math.max(base, took * 3));
+      p.timer = setTimeout(run, wait);
+    };
+    p.kick = () => { if (p.running) return; clearTimeout(p.timer); run(); };
+    pollers.push(p);
+    run();
+    return p;
+  }
+
+  const kickPolls = () => pollers.forEach(p => p.kick());
+
+  function startApp() {
+    if (appStarted) return;
+    appStarted = true;
+    startPoll(refreshStates, 3000);
+    startPoll(refreshSessions, 8000);
+  }
+
   (async function init() {
-    await refreshStates();
-    await refreshSessions();
-    setInterval(refreshStates, 3000);
-    setInterval(refreshSessions, 8000);
+    try {
+      await fetchSetupState();
+    } catch {
+      startApp();   // setup API unreachable: fall back rather than show nothing
+      return;
+    }
+    if (setupState.needsSetup) openSetup();
+    else startApp();
   })();
 </script>
 </body>

@@ -5,54 +5,44 @@
 # path: no Xcode, no swift build, no codesigning - just the same terminal the
 # .app wraps, served on loopback.
 #
-# The working directory that new terminal sessions start in is read from
-# mts-config.json (key "home"). If that file is missing it is created with a
-# sane default. Change it there, not here.
+# The working directory is not set here. On a first run the app asks for it - and
+# for a Claude login - on screen, and stores both per user (see setup.py). This
+# script only needs to know which port to open.
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG="$DIR/mts-config.json"
-DEFAULT_HOME="$HOME/Documents/AI-Hub"
 DEFAULT_PORT=8722
 
-# Read home + port from mts-config.json, creating it with defaults if absent.
-# We lean on python3 (already required by server.py) so we never need jq, and so
-# a "~" in the config gets expanded to an absolute path.
+# Ask setup.py for the port and the configured folder, so this script and the
+# server can never disagree about either. A blank folder means setup has not run
+# yet, which is a thing to say out loud rather than a failure.
 {
-    read -r HOME_DIR
     read -r PORT
-} < <(python3 - "$CONFIG" "$DEFAULT_HOME" "$DEFAULT_PORT" <<'PY'
-import json, os, sys
+    read -r HOME_DIR
+} < <(python3 - "$DIR" "$DEFAULT_PORT" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import setup
 
-cfg, default_home, default_port = sys.argv[1], sys.argv[2], int(sys.argv[3])
-
-data = {}
-if os.path.exists(cfg):
-    try:
-        with open(cfg) as f:
-            data = json.load(f)
-    except Exception:
-        data = {}
-
-home = data.get("home", default_home)
-port = data.get("port", default_port)
-
-# Write a fresh config the first time, so the user has something to edit.
-if not os.path.exists(cfg):
-    with open(cfg, "w") as f:
-        json.dump({"home": default_home, "port": default_port}, f, indent=2)
-        f.write("\n")
-
-print(os.path.abspath(os.path.expanduser(home)))
-print(int(port))
+cfg = setup.load_config()
+try:
+    port = int(cfg.get("port") or sys.argv[2])
+except (TypeError, ValueError):
+    port = int(sys.argv[2])
+print(port)
+print(setup.configured_home() if setup.is_complete() else "")
 PY
 )
 
 URL="http://127.0.0.1:$PORT/"
 
-echo "==> Working directory: $HOME_DIR"
+if [[ -n "$HOME_DIR" ]]; then
+    echo "==> Working directory: $HOME_DIR"
+else
+    echo "==> First run - the page will ask for a Claude login and a folder"
+fi
 echo "==> Starting terminal server on $URL"
-python3 "$DIR/server.py" --port "$PORT" --home "$HOME_DIR" &
+python3 "$DIR/server.py" --port "$PORT" &
 SERVER_PID=$!
 
 # Stop the server we started when this script exits (Ctrl-C, error, or normal).

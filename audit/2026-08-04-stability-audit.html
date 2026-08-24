@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mattdaemon - stability audit, 4 Aug 2026</title>
+<style>
+  :root{
+    --bg:#0b0b0c; --surface:#151517; --surface2:#101012; --border:#242427;
+    --ink:#f2f2f3; --inkMute:#9a9aa2; --inkDim:#63636b;
+    --green:#22c55e; --yellow:#eab308; --red:#ef4444; --blue:#7aa2f7;
+    --mono:'JetBrains Mono','SF Mono',Menlo,monospace;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,'Inter',system-ui,sans-serif;
+    font-size:14.5px;line-height:1.65;padding:0 0 90px}
+  .wrap{max-width:940px;margin:0 auto;padding:0 26px}
+
+  header{border-bottom:1px solid var(--border);background:var(--surface2);
+    padding:40px 0 30px;margin-bottom:36px}
+  h1{font-size:26px;font-weight:600;letter-spacing:-.01em;margin-bottom:8px}
+  .sub{color:var(--inkMute);font-size:14px;max-width:70ch}
+  .meta{margin-top:18px;display:flex;gap:9px;flex-wrap:wrap}
+  .pill{font-family:var(--mono);font-size:11px;border:1px solid var(--border);
+    border-radius:20px;padding:4px 11px;color:var(--inkMute)}
+  .pill.good{border-color:#1e4d33;color:var(--green)}
+  .pill.warn{border-color:#4d431e;color:var(--yellow)}
+
+  h2{font-size:12px;font-family:var(--mono);letter-spacing:.14em;text-transform:uppercase;
+    color:var(--inkDim);margin:44px 0 16px;padding-bottom:9px;border-bottom:1px solid var(--border)}
+  h3{font-size:16px;font-weight:600;margin-bottom:4px}
+
+  .find{background:var(--surface);border:1px solid var(--border);border-left:2px solid var(--border);
+    border-radius:10px;padding:18px 20px;margin-bottom:14px}
+  .find.fixed{border-left-color:var(--green)}
+  .find.open{border-left-color:var(--yellow)}
+  .find .top{display:flex;align-items:baseline;gap:11px;margin-bottom:11px}
+  .find .n{font-family:var(--mono);font-size:11px;color:var(--inkDim);flex:none;padding-top:3px}
+  .tag{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
+    border:1px solid var(--border);border-radius:4px;padding:2px 7px;color:var(--inkMute);
+    flex:none;margin-left:auto;align-self:flex-start}
+  .tag.fixed{border-color:#1e4d33;color:var(--green)}
+  .tag.open{border-color:#4d431e;color:var(--yellow)}
+  .find dl{margin-top:10px;display:grid;grid-template-columns:96px 1fr;gap:7px 14px;font-size:13.5px}
+  .find dt{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--inkDim);padding-top:3px}
+  .find dd{color:var(--inkMute)}
+  .find dd b{color:var(--ink);font-weight:600}
+  code{font-family:var(--mono);font-size:12.5px;background:#000;border:1px solid var(--border);
+    border-radius:4px;padding:1px 5px;color:#cfd3dc}
+  pre{font-family:var(--mono);font-size:12px;background:#000;border:1px solid var(--border);
+    border-radius:7px;padding:11px 13px;overflow-x:auto;margin:9px 0;color:#cfd3dc;line-height:1.5}
+  pre .c{color:var(--inkDim)}
+  pre .r{color:var(--red)}
+  pre .g{color:var(--green)}
+
+  table{width:100%;border-collapse:collapse;margin:10px 0 18px;font-size:13.5px}
+  th{text-align:left;font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;
+    text-transform:uppercase;color:var(--inkDim);font-weight:500;
+    border-bottom:1px solid var(--border);padding:7px 10px 7px 0}
+  td{padding:8px 10px 8px 0;border-bottom:1px solid #1a1a1d;color:var(--inkMute);vertical-align:top}
+  td b{color:var(--ink);font-weight:600}
+  td.num{font-family:var(--mono);white-space:nowrap}
+  .win{color:var(--green)}
+
+  .note{background:var(--surface2);border:1px solid var(--border);border-radius:9px;
+    padding:15px 18px;margin:16px 0;color:var(--inkMute);font-size:13.5px}
+  .note b{color:var(--ink)}
+  ul{margin:8px 0 8px 20px}
+  li{margin-bottom:7px;color:var(--inkMute)}
+  li b{color:var(--ink);font-weight:600}
+  .opt{display:grid;grid-template-columns:1fr 92px 92px;gap:0;align-items:start;
+    border-bottom:1px solid #1a1a1d;padding:12px 0}
+  .opt .h{font-weight:600;color:var(--ink);margin-bottom:3px}
+  .opt .d{color:var(--inkMute);font-size:13.5px;padding-right:20px}
+  .opt .v{font-family:var(--mono);font-size:11.5px;color:var(--inkMute);padding-top:2px}
+  .opt .v.hi{color:var(--green)}
+  .opthead{display:grid;grid-template-columns:1fr 92px 92px;font-family:var(--mono);
+    font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--inkDim);
+    border-bottom:1px solid var(--border);padding-bottom:7px}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>Mattdaemon - stability audit</h1>
+    <div class="sub">Everything reported as "the app gets buggy after a while": the corrupted
+      screen, sessions that will not close, the red dot that wants nothing, and the dead Attach
+      button. Seven defects found and fixed, each with the mechanism named and a test that fails
+      without the fix. Plus what the measurements did <i>not</i> support, and where the remaining
+      time is best spent.</div>
+    <div class="meta">
+      <span class="pill">4 August 2026</span>
+      <span class="pill good">7 fixed</span>
+      <span class="pill warn">2 still open</span>
+      <span class="pill">44 checks green</span>
+    </div>
+  </div>
+</header>
+
+<div class="wrap">
+
+<h2>Fixed</h2>
+
+<div class="find fixed">
+  <div class="top">
+    <span class="n">01</span>
+    <div><h3>Attach did nothing in the app</h3></div>
+    <span class="tag fixed">fixed</span>
+  </div>
+  <dl>
+    <dt>Symptom</dt><dd>"The attach button is not working at the moment." Intermittent-looking, because paste and drag-and-drop kept working.</dd>
+    <dt>Mechanism</dt><dd>The page opens a file picker with <code>&lt;input type="file"&gt;</code>. A WKWebView never opens one on its own - the host app must implement <code>runOpenPanelWith</code>. It was not implemented, so the click was swallowed in silence. In a browser the same page works, which is what made it look like a bug that came and went.</dd>
+    <dt>Fix</dt><dd>Implemented the delegate with an <code>NSOpenPanel</code>. The completion handler is called on cancel too - WebKit keeps the input disabled until it is, so a dropped cancel would kill Attach for the rest of the session.</dd>
+    <dt>Certainty</dt><dd><b>Certain.</b> A missing delegate method cannot half-work.</dd>
+  </dl>
+</div>
+
+<div class="find fixed">
+  <div class="top">
+    <span class="n">02</span>
+    <div><h3>The corrupted, overlapping screen</h3></div>
+    <span class="tag fixed">fixed</span>
+  </div>
+  <dl>
+    <dt>Symptom</dt><dd>Text drawn over itself at two different widths, and escape-sequence debris printed as literal text - <code>5;180m</code> in your screenshot.</dd>
+    <dt>Mechanism</dt><dd>Each session keeps a 32 KB scrollback buffer that is replayed verbatim to a terminal when it reconnects. When the buffer passed 32 KB it was trimmed with a blind byte cut - <code>del buf[:excess]</code> - which can slice an escape sequence in half. The buffer then <b>begins</b> with the tail of a sequence. A fresh xterm prints that tail as text and its parser is left in the wrong state, so everything after it renders shifted. It needed both a long-running session (to wrap the buffer) and a reconnect (sleep, wake, network blip) - which is exactly why it felt random.</dd>
+    <dt>Evidence</dt><dd>Reproduced directly against the real buffer code:
+      <pre><span class="c">old cut begins with:</span> <span class="r">b'0m'</span>   <span class="c">&lt;- printed as text, parser desynced</span>
+<span class="c">new cut begins with:</span> <span class="g">b'\x1b[1mDone\x1b[0m...'</span></pre></dd>
+    <dt>Fix</dt><dd>Trim to the next escape sequence rather than to an arbitrary byte, so a replay always starts somewhere a terminal can begin reading. Multi-byte characters are no longer split either.</dd>
+    <dt>Certainty</dt><dd><b>Mechanism proven.</b> The debris in the reproduction is the same shape as the debris on your screen.</dd>
+  </dl>
+</div>
+
+<div class="find fixed">
+  <div class="top">
+    <span class="n">03</span>
+    <div><h3>Red dot on a session that wants nothing</h3></div>
+    <span class="tag fixed">fixed</span>
+  </div>
+  <dl>
+    <dt>Symptom</dt><dd>"A session is done, but it's showing red like it needs me, and then I'm clicking on it and I don't need anything."</dd>
+    <dt>Mechanism</dt><dd>The classifier searched the <b>whole visible pane</b> for prompt text: <code>do you want to</code>, <code>y/n</code>, <code>❯ 1. yes</code>. Real panes here are 53 lines. An already-answered permission box still sitting in the transcript kept the session red, and so did any output that merely contains "(y/n)" - documentation, a code block, a script's own help text.</dd>
+    <dt>Aggravator</dt><dd>The Claude Code hooks that stamp a precise state (<code>@webstate</code>) are <b>not installed on this Mac</b> - checked: <code>~/.claude/settings.json</code> has no <code>webterm-state</code> hook. So for local sessions the pane text is the only signal there is, and it was being read at its noisiest.</dd>
+    <dt>Fix</dt><dd>Only the live region counts - the last 20 lines, where a terminal puts what it is asking now. A real waiting box still reads red; an answered one, and mere prose, do not.</dd>
+    <dt>Certainty</dt><dd><b>Mechanism proven</b> with 53-line panes matching the real ones. Installing the state hook on the Mac would make this exact rather than heuristic - see opportunities.</dd>
+  </dl>
+</div>
+
+<div class="find fixed">
+  <div class="top">
+    <span class="n">04</span>
+    <div><h3>Every local action waited on the VPS</h3></div>
+    <span class="tag fixed">fixed</span>
+  </div>
+  <dl>
+    <dt>Symptom</dt><dd>The app "gets one more buggy" the longer it runs, with no single trigger.</dd>
+    <dt>Mechanism</dt><dd>Both status endpoints called the box <b>inside the request</b>, with a 6-second timeout. Every status poll therefore cost a network round trip, and a slow or unreachable box made every poll take up to six seconds - while the page kept firing a new one every three (see 05). Your Mac's status was hostage to a machine that also runs the Claude farm.</dd>
+    <dt>Measured</dt><dd>The box answers in <b>0.13-0.17s</b> right now, so this is not what you are seeing this minute. It is what you see whenever that box is loaded - and it has a history of exactly that.</dd>
+    <dt>Fix</dt><dd>A background thread asks the box on its own clock and leaves the answer in a snapshot. Requests read the snapshot and return at local speed, always. The VPS section goes "offline" if the snapshot ages past 25s instead of freezing the app.</dd>
+  </dl>
+</div>
+
+<div class="find fixed">
+  <div class="top">
+    <span class="n">05</span>
+    <div><h3>Status polls piled up on themselves</h3></div>
+    <span class="tag fixed">fixed</span>
+  </div>
+  <dl>
+    <dt>Mechanism</dt><dd>The page polled on a fixed <code>setInterval</code> with no guard: if a poll took longer than its interval, the next one fired anyway. The browser queues those against its ~6-per-origin limit, so the backlog delays whatever you do next, and the server is asked to redo expensive work it has not finished. It also kept polling at full rate while the window was hidden.</dd>
+    <dt>Measured</dt><dd>Against a status endpoint made to take 2s, watched for 24s:
+      <table>
+        <tr><th>&nbsp;</th><th>Before</th><th>After</th></tr>
+        <tr><td>Status polls issued</td><td class="num">8</td><td class="num win">3</td></tr>
+        <tr><td>Size heartbeats</td><td class="num">17</td><td class="num win">7</td></tr>
+        <tr><td>Polls while hidden (12s)</td><td class="num">4</td><td class="num win">0</td></tr>
+      </table></dd>
+    <dt>Fix</dt><dd>Each poll schedules its own next run, never overlaps itself, backs off when answers are slow, and goes quiet when the window is hidden. The size heartbeat speaks when the size changes and otherwise just often enough to stay inside the server's 6s TTL.</dd>
+  </dl>
+</div>
+
+<div class="find fixed">
+  <div class="top">
+    <span class="n">06</span>
+    <div><h3>Closing a session could stall everything else</h3></div>
+    <span class="tag fixed">fixed</span>
+  </div>
+  <dl>
+    <dt>Symptom</dt><dd>"Sometimes it's difficult for me to close a session."</dd>
+    <dt>Mechanism</dt><dd>When a session disappears, its view is torn down - which terminates a tmux client and <b>waits up to 5 seconds</b> for it. That teardown ran while holding <code>views_lock</code>, the lock every keystroke, resize and stream attach needs. So the moment a session ended, the whole app could freeze for seconds. Two of them, ten seconds.</dd>
+    <dt>Fix</dt><dd>Views are removed from the map under the lock and torn down outside it, and the wait is 1s before a kill. Nothing user-facing waits on a dying tmux client any more.</dd>
+    <dt>Certainty</dt><dd><b>Mechanism certain</b> from the code; how often it fired in your hour is not measurable after the fact.</dd>
+  </dl>
+</div>
+
+<div class="find fixed">
+  <div class="top">
+    <span class="n">07</span>
+    <div><h3>The sidebar marked a session you were not in</h3></div>
+    <span class="tag fixed">fixed</span>
+  </div>
+  <dl>
+    <dt>Mechanism</dt><dd>Two causes. A blip on the box dropped its sessions from one poll, which the app read as "gone" and answered by moving you into an unrelated local session and marking that. And on reload it selected whatever tmux listed first, rather than where you were.</dd>
+    <dt>Evidence</dt><dd>Reproduced: forcing a blip put the app in <code>CRM</code> - the session marked in your screenshot.</dd>
+    <dt>Fix</dt><dd>A session counts as gone only when the machine that owns it says so; the app remembers where you were across reloads. While a host is unreachable, nothing is marked rather than something wrong.</dd>
+  </dl>
+</div>
+
+<h2>What the numbers did not support</h2>
+
+<div class="note">
+  <b>The browser was not running out of connections.</b> The obvious theory for "buttons stop
+  working" is the ~6-connections-per-origin limit being eaten by streams and polls. Measured
+  against the real page, the browser <i>queues</i> excess polls rather than opening more sockets:
+  peak concurrent connections stayed at 3, and a close-session request still answered in 0.04s
+  even with the status endpoint crawling. The pile-up is real and worth fixing (05), but the
+  damage it does is backlog and wasted server work, not a starved connection pool.
+  <br><br>
+  <b>The status poll is not expensive at your scale.</b> With 6 sessions it took 61ms before the
+  caching change and 35ms after. Worth having - it grows with session count, and the box runs the
+  same code for its 8 - but it is not what made your app sticky.
+</div>
+
+<h2>Still open</h2>
+
+<div class="find open">
+  <div class="top">
+    <span class="n">08</span>
+    <div><h3>The "after an hour" feeling has no single proven cause</h3></div>
+    <span class="tag open">open</span>
+  </div>
+  <dl>
+    <dt>Status</dt><dd>Four of the seven fixes above each degrade over time or with session count, so the symptom should be materially better. But nothing yet <b>proves</b> a leak over hours, because that needs the app watched over hours.</dd>
+    <dt>Now measurable</dt><dd>Settings has a <b>How it is running</b> panel: how long polls actually take (typical and slow), how many terminals are attached, how many are stale, stream and thread counts, and how fresh the VPS snapshot is. When it next feels sticky, open it before restarting - if <code>stale</code> is above zero, or the poll timings have crept into seconds, that is the leak, named.</dd>
+    <dt>Also served</dt><dd><code>curl -s localhost:8722/api/terminal/health</code></dd>
+  </dl>
+</div>
+
+<div class="find open">
+  <div class="top">
+    <span class="n">09</span>
+    <div><h3>The status hook is missing on this Mac</h3></div>
+    <span class="tag open">open</span>
+  </div>
+  <dl>
+    <dt>Detail</dt><dd>On the box, Claude Code hooks stamp each session's exact state. On this Mac they are not installed, so local dots are inferred from pane text and the process tree. Finding 03 makes that inference much less noisy, but it stays an inference.</dd>
+    <dt>Fix available</dt><dd>Install the <code>webterm-state</code> hook locally and the dots become exact: <b>attention</b> comes from Claude's own PermissionRequest, <b>idle</b> from its Stop. Roughly an hour, and it removes a whole class of wrong-colour complaints. Not done here because it edits your global Claude config, which is yours to decide.</dd>
+  </dl>
+</div>
+
+<h2>Worth doing next</h2>
+
+<div class="opthead"><div>Opportunity</div><div>Effort</div><div>Payoff</div></div>
+
+<div class="opt">
+  <div class="d"><div class="h">Install the state hook on this Mac</div>
+    Turns the status dots from a heuristic into a fact, and removes the last reason for a
+    wrong colour. Pairs with finding 03.</div>
+  <div class="v">1 hour</div><div class="v hi">high</div>
+</div>
+
+<div class="opt">
+  <div class="d"><div class="h">Keep-alive between the page and the engine</div>
+    The server still speaks HTTP/1.0, so <i>every</i> poll, keystroke and heartbeat opens and
+    closes a fresh TCP connection - thousands an hour. Switching to HTTP/1.1 needs
+    <code>Connection: close</code> set explicitly on the two streaming endpoints and a
+    Content-Length on two hand-written 404s; get either wrong and streams hang, which is why it
+    is listed rather than done in the same pass as the fixes above.</div>
+  <div class="v">2 hours</div><div class="v hi">high</div>
+</div>
+
+<div class="opt">
+  <div class="d"><div class="h">Push status down the stream you already have</div>
+    Status is polled every 3s for every session. The app already holds an open stream to the
+    engine - the dots could ride it and be pushed when they change. Removes the poll, its
+    backlog and its timing entirely.</div>
+  <div class="v">half a day</div><div class="v hi">high</div>
+</div>
+
+<div class="opt">
+  <div class="d"><div class="h">Batch the pane reads</div>
+    Classification spawns one <code>tmux capture-pane</code> per session that has produced output.
+    tmux can answer for every session in a single call; at 14 sessions that is one process instead
+    of fourteen. Now partly covered by the activity cache, so this is the tail of the win.</div>
+  <div class="v">2 hours</div><div class="v">medium</div>
+</div>
+
+<div class="opt">
+  <div class="d"><div class="h">Let the engine survive the window</div>
+    Closing the app kills the server; tmux keeps the shells, but scrollback buffers and view
+    attachments are rebuilt from scratch every launch. A small launch agent would keep it warm,
+    so opening the app is instant and reconnects stop being the risky path they were in
+    finding 02.</div>
+  <div class="v">2 hours</div><div class="v">medium</div>
+</div>
+
+<div class="opt">
+  <div class="d"><div class="h">Cap what a runaway session can cost</div>
+    A session printing megabytes (a build, a log tail) broadcasts every 4 KB read straight to the
+    browser. A short coalescing window - 16ms, say - would cut the event count hard on exactly
+    the sessions that hurt most, with no visible difference.</div>
+  <div class="v">1 hour</div><div class="v">medium</div>
+</div>
+
+<div class="opt">
+  <div class="d"><div class="h">Retire the size-report heartbeat</div>
+    The engine sizes a session to the smallest viewer reporting within 6s, so every viewer must
+    keep speaking. With one viewer - the normal case - the whole mechanism is unnecessary
+    traffic. Detect the single-viewer case and stop the heartbeat entirely.</div>
+  <div class="v">1 hour</div><div class="v">low</div>
+</div>
+
+<h2>How this was verified</h2>
+
+<pre>python3 server.py --selftest          <span class="c"># token round-trips through a real tmux shell</span>
+python3 server.py --selftest-setup    <span class="c"># 17 checks: first-run, gate, config, VPS save</span>
+
+<span class="c"># in the scratchpad, against the real page with a stub engine:</span>
+render_and_state_test.py   <span class="c"># 14  the scrollback cut + the status dot</span>
+active_marker_test.py      <span class="c">#  8  which session is marked, across blips and reloads</span>
+poll_pressure_test.py      <span class="c">#  6  poll overlap, backoff, hidden window, button latency</span>
+reorder_test.py            <span class="c">#  5  drag-to-reorder survives polls and reloads</span>
+setup_e2e.py               <span class="c"># 20  the whole first-run flow in a browser</span></pre>
+
+<div class="note">
+  Each fix was checked against a deliberately reverted copy of the code first, so a green test
+  means the test can actually fail. The reverted run of <code>active_marker_test.py</code> is
+  what produced <code>CRM</code> - the session in your screenshot.
+</div>
+
+</div>
+</body>
+</html>

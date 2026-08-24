@@ -1,9 +1,15 @@
-# Mattdaemon - the VPS web terminal as a local Mac app
+# Mattdaemon - Claude Code in a terminal that keeps running
 
-This is a small, self-contained wrapper that runs the AI-Hub web terminal
-locally on a Mac. It is the same tmux-backed terminal you use in the VPS
-dashboard at `:3333`, but pointed at your own machine and served on loopback
-only (`127.0.0.1`) - so there is no auth and nothing is exposed to the network.
+A small, self-contained Mac app that runs tmux-backed terminal sessions with
+Claude Code in them. Sessions survive closing the window, so you can come back
+to whatever Claude was doing. It is the same terminal as the AI-Hub dashboard at
+`:3333`, pointed at your own machine and served on loopback only (`127.0.0.1`) -
+nothing is exposed to the network.
+
+**It carries nobody's account.** On first launch it asks for a Claude Code login
+(your own subscription) and the folder your sessions should open in, and stores
+both per user outside the app bundle - so the `.app` can be handed to someone
+else as-is. See [First run](#first-run) and [Give it to someone else](#give-it-to-someone-else).
 
 Two ways to run it:
 
@@ -12,9 +18,39 @@ Two ways to run it:
 - **No build** - `./run-terminal.sh` starts the Python engine and opens it in
   your browser. No Xcode, no compilation. Good enough for daily use.
 
-Under the hood both paths run the same three pieces: `server.py` (a tiny
-loopback HTTP server), `terminal_manager.py` (the tmux session logic), and the
-`static/` frontend.
+Under the hood both paths run the same four pieces: `server.py` (a tiny loopback
+HTTP server), `terminal_manager.py` (the tmux session logic), `setup.py`
+(first-run state and the per-user config), and the `static/` frontend.
+
+## First run
+
+The first launch shows a setup card instead of the terminal. Three steps:
+
+1. **Requirements** - it looks for Claude Code and tmux on this Mac and shows the
+   install command for whichever is missing. Neither is bundled; both are yours.
+2. **Your folder** - where new sessions open, so Claude starts inside your
+   project rather than your home directory. `Choose...` opens a normal macOS
+   folder picker in the `.app`, or an in-page folder list in the browser.
+3. **Sign in to Claude** - runs `claude auth login --claudeai` in a real terminal
+   inside the card and opens your browser. You sign in with **your own** Claude
+   subscription. The app never sees a password or a token: it types the command
+   and waits for Claude Code to report itself signed in.
+
+Nothing can open a shell until that is done - the server refuses, not just the
+page. The session you signed in through is kept and renamed after your folder,
+so you land straight in a working session.
+
+Afterwards all three live behind the gear in the sidebar, along with the
+optional VPS. Signing in as someone else, changing folder, or re-running the
+whole setup are all there.
+
+## Where your settings live
+
+    ~/Library/Application Support/MLSuiteTerminal/mts-config.json
+
+Per user, outside the app bundle, `0600` because it can hold a VPS token. The
+app writes it; you never have to. A `mts-config.json` next to `server.py` is
+still read as a fallback for a source checkout, and never written.
 
 ## Build the native app (on the Mac)
 
@@ -37,11 +73,11 @@ Mac. On any other platform, use the no-build path below.
 ./run-terminal.sh
 ```
 
-This reads your working directory from `mts-config.json`, starts
-`python3 server.py --port 8722` in the background, waits until it answers on
-`http://127.0.0.1:8722/`, then opens that URL in your default browser. Press
-`Ctrl-C` in the terminal to stop the server - the script traps the exit and
-shuts down the server it started.
+This starts `python3 server.py --port 8722` in the background, waits until it
+answers on `http://127.0.0.1:8722/`, then opens that URL in your default
+browser - setup card included, if you have not been through it. Press `Ctrl-C`
+in the terminal to stop the server; the script traps the exit and shuts down the
+server it started.
 
 Requirements: `python3`, `tmux`, and `curl` on your `PATH` (all standard on a
 Mac, `tmux` via Homebrew if you have not got it: `brew install tmux`).
@@ -53,14 +89,17 @@ browser tab - reopen it and your shells, running processes, and scrollback are
 still there. They do **not** survive a full reboot: tmux is torn down when the
 machine restarts, so you start fresh after a reboot.
 
-## VPS sessions in the same window
+## VPS sessions in the same window (optional, off by default)
 
-With a `vps` block in `mts-config.json` (see `mts-config.json.example`), the
-box's `:3333` terminal sessions appear in a **VPS** section of the sidebar
-alongside the local ones, and can be driven from here. The token is held by
-this server and proxied - it never reaches the browser. Each section has its
-own `+`, so a session can be started on either machine. Without the block, the
-app behaves exactly as local-only.
+Connect an AI-Hub dashboard under **Settings -> VPS** (address + token) and its
+`:3333` terminal sessions appear in a **VPS** section of the sidebar alongside
+the local ones, and can be driven from here. Nothing is saved until the box
+answers with that token. The token is held by this server and proxied - it never
+reaches the browser, and it never travels inside the app bundle. Each section
+gets its own `+`, so a session can be started on either machine.
+
+Until someone connects one, there is no VPS section and no mention of it outside
+Settings: a fresh install is a purely local terminal.
 
 ## Send a session to the VPS
 
@@ -81,23 +120,36 @@ asked to confirm first - the box has its own clone and will not see local
 changes until they are pushed. A session running a plain shell has no
 conversation to hand over, so it is simply reopened in the mapped folder.
 
+The mapping is per user, set in **Settings -> VPS -> Folder mapping**, one
+`local = remote` per line. There is no built-in default: one machine's folder
+layout is nobody else's.
+
 ## Change the working directory
 
-New terminal sessions start in the directory set by the `home` key in
-`mts-config.json` (in this folder). The default is `~/Documents/AI-Hub`.
+**Settings -> Working folder** (the gear at the bottom of the sidebar). It
+applies to sessions you open from then on; the ones already running stay where
+they are, because a running shell cannot be moved.
 
-The file is created automatically the first time you run `./run-terminal.sh`.
-See `mts-config.json.example` for the shape:
+## Give it to someone else
 
-```json
-{
-  "home": "~/Documents/AI-Hub",
-  "port": 8722
-}
-```
+The `.app` is self-contained and personal to nobody: no folder, no login, no
+token travels with it. Copy `build/Mattdaemon.app` across and it opens on the
+setup card for whoever launches it, against their own Claude subscription.
 
-Edit `home` to point anywhere you like (a `~` is expanded), then restart. The
-`.app` and the script both read the same file.
+- Everything personal lives in `~/Library/Application Support/MLSuiteTerminal/`,
+  which is per user and never inside the bundle. `build.sh` fails the build if a
+  `mts-config.json` ever ends up in `Contents/Resources`.
+- The Claude login is Claude Code's own, in their Keychain. This app only asks it
+  who is signed in, and it never handles a credential itself.
+- They need Claude Code and tmux installed; step 1 of setup tells them so, with
+  the command to fix it.
+- Building on their machine instead? `git clone`, then `cd macapp && ./build.sh`.
+- To hand over your own copy of the app, or to test the first-run experience:
+  **Settings -> Run first-time setup again**.
+
+Gatekeeper note: the app is ad-hoc signed, so a copy from another Mac needs
+right-click -> **Open** the first time (or `xattr -dr com.apple.quarantine
+Mattdaemon.app`).
 
 ## Optional: run at login via launchd (future add)
 
@@ -119,6 +171,26 @@ exit 0). The page-serving smoke confirms `server.py` serves the real UI:
 `GET /` returns `static/index.html` (200, `text/html`) and every asset the page
 references - the vendored `xterm.css`, `xterm.js`, and `addon-fit.js` under
 `/static/vendor/` - returns 200 with the correct content type, so the terminal
-front end loads with no missing dependencies. The only remaining step is to run
-`./macapp/build.sh` on a Mac to produce the native `.app` (Swift builds only on
-macOS); the no-build path already works everywhere.
+front end loads with no missing dependencies.
+
+Setup has its own two, plus a browser pass:
+
+- `python3 server.py --selftest-setup` - drives the setup API against a
+  throwaway config (`MTS_CONFIG`), no tmux and no network needed. 17 checks: a
+  fresh install needs setup, opening a shell is refused until it is finished, a
+  folder that does not exist is rejected, a real one is stored and takes effect
+  without a restart, the folder browser lists sub-folders, a VPS that does not
+  answer is not saved, an empty address disconnects, `complete` refuses without
+  a login, `reset` puts it back to first-run, and the config is written `0600`.
+- A stub-CLI test proves the sign-in step really drives a shell: with a fake
+  `claude` first on `PATH`, `/api/setup/login` opens a session and the pane comes
+  back showing `claude auth login --claudeai` running from the resolved absolute
+  path - so the wiring is verified without touching a real Claude login.
+- A Playwright pass walks the card as a new user in a real browser: both
+  requirements detected, the home directory (not anyone's project) pre-filled, a
+  bad folder refused with a reason, the existing login recognised, the summary
+  correct, and the app on screen with `setupComplete` written - no JS errors.
+
+`swift build -c release` compiles the app with the folder-picker bridge; run
+`./macapp/build.sh` on a Mac to produce the `.app` (Swift builds only on macOS).
+The no-build path works everywhere.

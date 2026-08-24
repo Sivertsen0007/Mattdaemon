@@ -1,14 +1,17 @@
 {
-  "home": "~/Documents/AI-Hub",
+  "//": "You should not need this file. The app writes its own config, per user, at ~/Library/Application Support/MLSuiteTerminal/mts-config.json: the first run collects the folder and the Claude login, and the gear in the sidebar changes them afterwards. This only documents the shape, for a source checkout that wants to pre-seed one. A mts-config.json next to server.py is read as a fallback and never written to.",
+
+  "setupComplete": true,
+  "home": "~/Documents/my-project",
   "port": 8722,
 
-  "//vps": "Optional. When set, the box's :3333 terminal sessions show up in a 'VPS' section of the sidebar and can be driven from here. The token stays on this Mac - it is proxied server-side and never reaches the browser. Copy this file to mts-config.json (git-ignored) and fill in the real token.",
-  "//path_map": "Local folder -> its counterpart on the box, used by 'Send to VPS' in the session right-click menu. Longest match wins, and subfolders follow. A session in a folder with no mapping is refused rather than dropped somewhere unrelated, so add an entry per repo that is cloned on both machines.",
+  "//vps": "Optional, off by default. When set, the box's :3333 terminal sessions show up in a 'VPS' section of the sidebar and can be driven from here. The token stays on this Mac - it is proxied server-side and never reaches the browser - so it must never be committed, and never travels inside the .app.",
+  "//path_map": "Local folder -> its counterpart on the box, used by 'Send to VPS' in the session right-click menu. Longest match wins, and subfolders follow. A session in a folder with no mapping is refused rather than dropped somewhere unrelated, so add an entry per repo that is cloned on both machines. There is no built-in default.",
   "vps": {
-    "base_url": "http://72.62.195.38:3333",
+    "base_url": "http://203.0.113.10:3333",
     "token": "PUT_DASHBOARD_TOKEN_HERE",
     "path_map": {
-      "~/Documents/AI-Hub": "/home/aihub/AI-Hub"
+      "~/Documents/my-project": "/home/you/my-project"
     }
   }
 }

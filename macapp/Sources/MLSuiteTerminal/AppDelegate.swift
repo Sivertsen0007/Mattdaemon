@@ -5,13 +5,16 @@ import Darwin
 /// Boots the bundled Python terminal server as a child process, then shows a
 /// single window whose WKWebView points at that local server. The server is
 /// torn down on quit so nothing is left listening.
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScriptMessageHandler,
+                         NSWindowDelegate {
+    /// Posted by a second copy of the app that found this one already running.
+    /// Our cue to put a window back on screen - see `showWindow()`.
+    static let reopenNotification =
+        Notification.Name("com.mathiassivertsen.mlsuiteterminal.reopen")
+
     private var window: NSWindow!
     private var webView: WKWebView!
     private var server: Process?
-
-    /// Where the terminal opens by default. Overridable via the config file.
-    private var homeDir: String = NSHomeDirectory() + "/Documents/AI-Hub"
 
     /// First port we try; if taken we walk forward a few slots.
     private let basePort = 8722
@@ -19,8 +22,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var boundPort = 8722
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        homeDir = loadOrCreateHome()
-
         guard let serverScript = Bundle.main.path(forResource: "server", ofType: "py") else {
             fatalStart("Bundled server.py is missing from the app - reinstall Mattdaemon.")
             return
@@ -35,6 +36,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buildMenu()
         startServer(script: serverScript, port: port)
         buildWindow()
+
+        // A relaunched copy exits immediately, but posts this on its way out so
+        // we can put a window back if ours has gone missing.
+        DistributedNotificationCenter.default().addObserver(
+            self, selector: #selector(handleReopenRequest),
+            name: AppDelegate.reopenNotification, object: nil)
+
+        // Sleeping drops the connections the page was streaming on, and nothing
+        // in the web view is told: the sockets are simply never delivered from
+        // again. This is the cue to re-establish them, and unlike focus or
+        // visibility it arrives even for a window that stayed frontmost.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self, selector: #selector(handleWake),
+            name: NSWorkspace.didWakeNotification, object: nil)
 
         // Give the server a moment to bind before loading, then poll until the
         // port answers (or we give up and load anyway so the user sees an error).
@@ -51,34 +66,199 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
-    // MARK: - Config
+    /// Clicking the Dock icon of a running app is the other way back in when
+    /// the window is gone - AppKit calls this instead of launching a new copy.
+    func applicationShouldHandleReopen(_ sender: NSApplication,
+                                       hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { showWindow() }
+        return true
+    }
 
-    /// Reads `home` from ~/Library/Application Support/MLSuiteTerminal/mts-config.json,
-    /// creating the file with the default when it does not yet exist.
-    private func loadOrCreateHome() -> String {
-        let fm = FileManager.default
-        let support = fm.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Application Support/MLSuiteTerminal", isDirectory: true)
-        let configURL = support.appendingPathComponent("mts-config.json")
-        let defaultHome = NSHomeDirectory() + "/Documents/AI-Hub"
+    @objc private func handleReopenRequest() {
+        DispatchQueue.main.async { [weak self] in self?.showWindow() }
+    }
 
-        if let data = try? Data(contentsOf: configURL),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let home = obj["home"] as? String, !home.isEmpty {
-            return (home as NSString).expandingTildeInPath
+    /// A WKWebView with no UI delegate silently drops `window.open`, so the
+    /// plan panel's "open in your browser" button did nothing at all. There is
+    /// no second window to give it, and a plan belongs in a real browser
+    /// anyway, so hand the URL to the default one and decline the new view.
+    func webView(_ webView: WKWebView,
+                 createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction,
+                 windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let url = navigationAction.request.url { NSWorkspace.shared.open(url) }
+        return nil
+    }
+
+    /// `<input type="file">` - the Attach button.
+    ///
+    /// WebKit does not open a file picker on its own: without this delegate
+    /// method the click is swallowed and nothing whatsoever happens, which is
+    /// exactly how Attach behaved inside the app while working fine in a
+    /// browser. Paste and drag-and-drop were unaffected, which is what made it
+    /// look intermittent rather than simply missing.
+    func webView(_ webView: WKWebView,
+                 runOpenPanelWith parameters: WKOpenPanelParameters,
+                 initiatedByFrame frame: WKFrameInfo,
+                 completionHandler: @escaping ([URL]?) -> Void) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = parameters.allowsMultipleSelection
+        panel.prompt = "Attach"
+        panel.message = "Choose a file to send into this session"
+
+        let finish: (NSApplication.ModalResponse) -> Void = { response in
+            // The completion handler must be called exactly once, cancel
+            // included - WebKit keeps the input element disabled until it is,
+            // so a dropped cancel makes Attach dead for the rest of the session.
+            completionHandler(response == .OK ? panel.urls : nil)
+        }
+        if let window = window {
+            panel.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            panel.begin(completionHandler: finish)
+        }
+    }
+
+    /// Tells the page to rebuild its output streams after a wake. Delayed a
+    /// second so the network stack is back before it tries; the page backs off
+    /// and retries on its own regardless, and guards the call so a web view
+    /// that has not finished loading is a no-op rather than a JS error.
+    @objc private func handleWake() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+            self?.webView?.evaluateJavaScript(
+                "window.__mtsWake && window.__mtsWake()", completionHandler: nil)
+        }
+    }
+
+    // MARK: - Folder picker
+    //
+    // The setup screen and the settings panel both need a folder from the user.
+    // A web page cannot open one, so it asks us: window.webkit.messageHandlers
+    // .mts.postMessage({cmd: "pickFolder"}) -> NSOpenPanel -> the chosen path is
+    // handed back to window.__mtsFolderPicked. The page falls back to its own
+    // folder list when this bridge is absent (i.e. in a plain browser).
+
+    func userContentController(_ controller: WKUserContentController,
+                               didReceive message: WKScriptMessage) {
+        guard message.name == "mts",
+              let body = message.body as? [String: Any],
+              let cmd = body["cmd"] as? String else { return }
+        switch cmd {
+        case "pickFolder":
+            presentFolderPicker(startingAt: body["start"] as? String ?? "")
+        case "popOut":
+            guard let sid = body["sid"] as? String else { return }
+            popOut(sid: sid,
+                   path: body["url"] as? String ?? "/?solo=\(sid)",
+                   title: body["title"] as? String ?? sid)
+        default:
+            NSLog("Ignoring unknown bridge command: \(cmd)")
+        }
+    }
+
+    // MARK: - Pop-out windows
+    //
+    // A session dragged out of the grid gets a real window, which is the point:
+    // it can go on a second monitor and stay there. It is the same page against
+    // the same local server with ?solo=<sid>, so the terminal in it is the
+    // terminal - no second implementation to keep in step.
+    //
+    // The shell is a tmux session and outlives any window onto it, so closing
+    // one is not closing the session; the grid simply takes it back.
+
+    private var popWindows: [String: NSWindow] = [:]
+
+    private func popOut(sid: String, path: String, title: String) {
+        // Already out: raise it rather than opening a second window onto the
+        // same shell, which would be two views fighting over its size.
+        if let existing = popWindows[sid] {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        guard let url = URL(string: "http://127.0.0.1:\(boundPort)\(path)") else { return }
+
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        let bridge = WKUserContentController()
+        bridge.add(self, name: "mts")
+        config.userContentController = bridge
+
+        let view = WKWebView(frame: NSRect(x: 0, y: 0, width: 900, height: 600),
+                             configuration: config)
+        view.autoresizingMask = [.width, .height]
+        view.uiDelegate = self
+        if #available(macOS 13.3, *) { view.isInspectable = true }
+        view.load(URLRequest(url: url))
+
+        let win = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false)
+        win.title = "\(title) - Mattdaemon"
+        win.isReleasedWhenClosed = false
+        win.contentView = view
+        win.delegate = self
+        // Each session remembers its own window's size and place, so a pane you
+        // always put on the second screen lands there again.
+        win.setFrameAutosaveName("MLSuiteTerminalPop-\(sid)")
+        if win.frame.origin == .zero { win.center() }
+        win.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+
+        popWindows[sid] = win
+    }
+
+    /// A pop-out window closing hands its session back to the grid.
+    func windowWillClose(_ notification: Notification) {
+        guard let closing = notification.object as? NSWindow,
+              let sid = popWindows.first(where: { $0.value === closing })?.key
+        else { return }
+        popWindows.removeValue(forKey: sid)
+        let escaped = sid.replacingOccurrences(of: "\\", with: "\\\\")
+                         .replacingOccurrences(of: "'", with: "\\'")
+        webView?.evaluateJavaScript(
+            "window.__mtsPopBack && window.__mtsPopBack('\(escaped)')",
+            completionHandler: nil)
+    }
+
+    private func presentFolderPicker(startingAt start: String) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Use this folder"
+        panel.message = "Choose the folder your terminal sessions should open in"
+
+        let expanded = (start as NSString).expandingTildeInPath
+        if !expanded.isEmpty, FileManager.default.fileExists(atPath: expanded) {
+            panel.directoryURL = URL(fileURLWithPath: expanded)
         }
 
-        // Absent or unreadable: write the default so the user has a file to edit.
-        do {
-            try fm.createDirectory(at: support, withIntermediateDirectories: true)
-            let payload: [String: Any] = ["home": defaultHome]
-            let data = try JSONSerialization.data(withJSONObject: payload,
-                                                  options: [.prettyPrinted])
-            try data.write(to: configURL)
-        } catch {
-            NSLog("Could not write default config: \(error)")
+        let handler: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            self?.deliverPickedFolder(response == .OK ? (panel.url?.path ?? "") : "")
         }
-        return defaultHome
+        // Cancelling must still answer the page, or its promise never resolves
+        // and the Choose button is dead until the window is reloaded.
+        if let window = window {
+            panel.beginSheetModal(for: window, completionHandler: handler)
+        } else {
+            panel.begin(completionHandler: handler)
+        }
+    }
+
+    private func deliverPickedFolder(_ path: String) {
+        // JSON-encoded rather than interpolated: a folder name may legally
+        // contain a quote or a backslash, and that must not become script.
+        let encoded = (try? JSONSerialization.data(withJSONObject: [path]))
+            .flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+        webView?.evaluateJavaScript(
+            "window.__mtsFolderPicked && window.__mtsFolderPicked(\(encoded)[0])",
+            completionHandler: nil)
     }
 
     // MARK: - Server process
@@ -86,9 +266,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func startServer(script: String, port: Int) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["python3", script,
-                             "--port", String(port),
-                             "--home", homeDir]
+        // No --home: the working directory is per-user config that the setup
+        // screen writes and the server reads. The app bundle deliberately knows
+        // nothing about anyone's folders, so a copy of it starts blank.
+        process.arguments = ["python3", script, "--port", String(port)]
         // A Finder-launched .app inherits launchd's minimal PATH
         // (/usr/bin:/bin:/usr/sbin:/sbin), which misses tmux in a Homebrew
         // prefix or a userland (~/.local) build. Prepend those so the server -
@@ -236,7 +417,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editMenu.addItem(withTitle: "Select All",
                          action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
 
+        // View menu. Reload reloads the page, not the sessions: the shells live in
+        // tmux and the server is a separate process, so this costs nothing and is
+        // the only way to pick up a changed index.html without quitting the app.
+        let viewItem = NSMenuItem()
+        mainMenu.addItem(viewItem)
+        let viewMenu = NSMenu(title: "View")
+        viewItem.submenu = viewMenu
+        viewMenu.addItem(withTitle: "Reload",
+                         action: #selector(reloadPage(_:)), keyEquivalent: "r")
+
         NSApp.mainMenu = mainMenu
+    }
+
+    /// Reload the web view from the local server, bypassing any cached copy of
+    /// the page - the point is to see the file that is on disk right now.
+    @objc private func reloadPage(_ sender: Any?) {
+        webView?.reloadFromOrigin()
     }
 
     // MARK: - Window / web view
@@ -244,9 +441,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func buildWindow() {
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
+        // The page's one line back to native code: the folder picker.
+        let bridge = WKUserContentController()
+        bridge.add(self, name: "mts")
+        config.userContentController = bridge
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1100, height: 720),
                             configuration: config)
         webView.autoresizingMask = [.width, .height]
+        webView.uiDelegate = self
+        // Attachable from Safari: Develop > this Mac > Mattdaemon. Without it a
+        // bug inside the web view can only be guessed at from the outside,
+        // which is no way to chase one that reproduces nowhere else.
+        if #available(macOS 13.3, *) { webView.isInspectable = true }
 
         window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1100, height: 720),
@@ -254,6 +460,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false)
         window.title = "Mattdaemon"
+        // NSWindow defaults to releasing itself on close, which predates ARC:
+        // our strong `window` reference would be left dangling, and re-showing
+        // it is then undefined. Own the lifetime here instead.
+        window.isReleasedWhenClosed = false
         window.contentView = webView
         window.center()
         // Remember size/position across launches.
@@ -265,6 +475,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func loadTerminal(port: Int) {
         guard let url = URL(string: "http://127.0.0.1:\(port)/") else { return }
         webView.load(URLRequest(url: url))
+    }
+
+    /// Puts a window back on screen, rebuilding it if there is none left.
+    ///
+    /// The app has been seen alive with a healthy server, live tmux sessions
+    /// and zero windows - nothing to click, and a relaunch hit the
+    /// single-instance guard. Recreating the window is the way out of that.
+    /// The sessions are tmux-backed, so a fresh web view just re-attaches and
+    /// tmux redraws; nothing running is disturbed.
+    private func showWindow() {
+        if let existing = window {
+            if existing.isMiniaturized { existing.deminiaturize(nil) }
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        buildWindow()
+        loadTerminal(port: boundPort)
     }
 
     // MARK: - Errors
