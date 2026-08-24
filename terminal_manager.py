@@ -762,8 +762,13 @@ def session_diff(sid):
     return {"ok": True, "cwd": cwd, "repo": top, "text": text}
 
 
-def start_session(name=None):
-    """Create a new tmux-backed session."""
+def start_session(name=None, cwd=None):
+    """Create a new tmux-backed session.
+
+    `cwd` opens it somewhere other than the configured working folder - used by
+    a handover, which has to land in the folder that matches the machine the
+    work came from, not wherever new sessions normally start.
+    """
     if not _tmux_available():
         return {"ok": False, "error": "tmux not installed"}
 
@@ -789,8 +794,12 @@ def start_session(name=None):
             n += 1
         name = base if n == 1 else f"{base} {n}"
 
+    start_dir = START_DIR
+    if cwd and os.path.isdir(os.path.expanduser(cwd)):
+        start_dir = os.path.expanduser(cwd)
+
     cols, rows = 80, 24
-    r = _tmux("new-session", "-d", "-s", _sname(sid), "-c", START_DIR,
+    r = _tmux("new-session", "-d", "-s", _sname(sid), "-c", start_dir,
               "-x", str(cols), "-y", str(rows), "/bin/bash", "--login")
     if r.returncode != 0:
         return {"ok": False, "error": (r.stderr or "tmux new-session failed").strip()}

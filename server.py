@@ -93,7 +93,7 @@ SID_VPS_PREFIX = "vps:"
 
 # Bound once in main()/_run_selftest via _load_vps_config(). Empty base = the
 # proxy is off and this behaves exactly like the pre-VPS local-only server.
-VPS_BASE = ""     # e.g. "http://72.62.195.38:3333" (no trailing slash)
+VPS_BASE = ""     # e.g. "http://192.0.2.10:3333" (no trailing slash)
 VPS_TOKEN = ""    # dashboard Bearer token
 VPS_TIMEOUT = 6   # seconds for non-streaming calls; the box is one hop away
 
@@ -563,6 +563,345 @@ def send_local_to_vps(sid, confirm=False, name=None):
 
     return {"ok": True, "session": new, "vps_cwd": vps_cwd,
             "briefed": bool(brief)}
+
+
+# ── Bring the box's work back to this Mac ──────────────────────────────────
+# The mirror of send-to-vps, and the same kind of thing - a process still
+# cannot move between machines - with one part that the outbound direction
+# does not need: the files. Going out, the box already has its own clone and
+# only wants to know what to do. Coming back, the Mac's clone is behind by
+# whatever the box has been building, so the handover is worthless unless the
+# work is committed, pushed, and actually pulled down here first. That is the
+# order below, and the local session is not opened until the commit the box
+# named is present on this Mac.
+#
+# Reading the brief back off the box goes through its own file endpoint, which
+# serves paths under the folder its dashboard was started on. The brief is
+# written into the repo's .git directory: inside that folder, and invisible to
+# git status, so a handover never leaves a stray file in the working tree.
+
+PULL_WAIT = 120         # how long to keep fetching for the box's commit
+PULL_POLL = 4
+_HEADER_KEYS = ("CWD", "BRANCH", "COMMIT", "PUSHED")
+
+
+def _map_path_from_vps(remote_path):
+    """Translate a box path to its counterpart on this Mac, or None when the
+    folder has no known equivalent here. The exact inverse of
+    _map_path_to_vps, longest match and all."""
+    if not remote_path:
+        return None
+    best_remote, best_local = "", None
+    for loc, rem in VPS_PATH_MAP.items():
+        rem = rem.rstrip("/")
+        if (remote_path == rem or remote_path.startswith(rem + "/")) \
+                and len(rem) > len(best_remote):
+            best_remote = rem
+            best_local = os.path.expanduser(loc).rstrip("/")
+    if best_local is None:
+        return None
+    return best_local + remote_path[len(best_remote):]
+
+
+def _vps_session_place(real_id):
+    """(cwd, repo) for a session on the box.
+
+    Its sessions API does not carry a working directory, but its diff endpoint
+    does - it has to resolve one to run git there - so that is where this comes
+    from rather than from a command typed into the pane, which would be
+    impossible anyway while Claude owns the prompt."""
+    res = _vps_get("/api/terminal/diff?sid=" + urllib.request.quote(real_id))
+    if not (res and res.get("ok")):
+        return "", ""
+    return (res.get("cwd") or "").rstrip("/"), (res.get("repo") or "").rstrip("/")
+
+
+def _remote_brief_path(repo, cwd, real_id):
+    """Where the box should write its brief. Inside .git when there is a repo -
+    under the served folder, and git never looks at it."""
+    base = "mts-handoff-%s.md" % real_id
+    return "%s/.git/%s" % (repo, base) if repo else "%s/.%s" % (cwd, base)
+
+
+def _request_remote_brief(real_id, remote_file):
+    """Ask the box's Claude to push its work and write a handoff brief.
+
+    The header is fixed and machine-read: this end needs the commit to wait
+    for, and asking for it in a known shape is more reliable than parsing prose.
+    """
+    prompt = (
+        "Hand this work over to a Claude on my Mac. Do it in this order.\n\n"
+        "1. Get the work off this machine: commit anything uncommitted with a "
+        "clear message and push the current branch to origin. If there is "
+        "nothing to commit, push what is already there. If pushing is not "
+        "possible - no remote, no permission, detached HEAD - carry on anyway "
+        "and say so.\n\n"
+        "2. Write a handoff brief to %s. It must START with exactly these four "
+        "lines, then a blank line:\n\n"
+        "CWD: <absolute path of the working directory>\n"
+        "BRANCH: <current git branch, or - >\n"
+        "COMMIT: <full sha now on origin, or - >\n"
+        "PUSHED: <yes or no>\n\n"
+        "3. Below that, the brief itself: what we are building, what is done, "
+        "what is next, the key files, and any decisions or gotchas it must "
+        "know. The Mac has its own clone of this repo at a different path, so "
+        "write file paths relative to the repo root where you can.\n\n"
+        "Do not ask me anything first - if this session has little context, say "
+        "so in the brief instead of asking. Write the file, then reply DONE."
+        % remote_file
+    )
+    res = _vps_post("/api/terminal/input", {"sid": real_id, "data": prompt},
+                    timeout=30)
+    if not (res and res.get("ok")):
+        return res
+    time.sleep(_SUBMIT_DELAY)
+    return _vps_post("/api/terminal/input", {"sid": real_id, "data": "\r"},
+                     timeout=30)
+
+
+def _read_remote_file(remote_file):
+    """The file's text off the box, or None while it is not there yet.
+
+    The endpoint answers a missing file with a JSON error body and a 200, so
+    "did I get bytes" is not enough of a test - a brief never starts with a
+    JSON object, which is what tells the two apart."""
+    data = _vps_get_bytes(
+        "/api/terminal/file?path=" + urllib.request.quote(remote_file))
+    if not data:
+        return None
+    head = data.lstrip()[:1]
+    if head == b"{" and b'"error"' in data[:200]:
+        return None
+    return data.decode("utf-8", "replace")
+
+
+def _await_remote_brief(remote_file, timeout=BRIEF_TIMEOUT):
+    """Wait for the brief to appear and stop growing, so a half-written file is
+    never acted on. Returns its text, or None on timeout."""
+    deadline = time.time() + timeout
+    last_len, stable = -1, 0
+    while time.time() < deadline:
+        text = _read_remote_file(remote_file)
+        if text is None:
+            time.sleep(BRIEF_POLL)
+            continue
+        stable = stable + 1 if len(text) == last_len else 0
+        last_len = len(text)
+        if stable >= 2:
+            return text.strip() or None
+        time.sleep(BRIEF_POLL)
+    return None
+
+
+def _parse_handoff_header(text):
+    """(header dict, body) from a brief. A missing header is not fatal - the
+    prose is still worth having - so anything absent comes back empty."""
+    header, lines = {}, text.splitlines()
+    body_from = 0
+    for i, line in enumerate(lines[:8]):
+        if not line.strip():
+            if header:
+                body_from = i + 1
+                break
+            continue
+        key, sep, val = line.partition(":")
+        key = key.strip().upper()
+        if sep and key in _HEADER_KEYS:
+            val = val.strip()
+            header[key] = "" if val in ("-", "<none>", "none") else val
+            body_from = i + 1
+    return header, "\n".join(lines[body_from:]).strip()
+
+
+def _git(cwd, *args, timeout=180):
+    try:
+        return subprocess.run(["git", *args], cwd=cwd, capture_output=True,
+                              text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def _pull_box_work(local_cwd, branch, sha):
+    """Fetch until the box's commit is here, then fast-forward if it is safe.
+
+    Two separate things, deliberately. Fetching is always safe and is what
+    actually brings the files across, so it happens whatever state the tree is
+    in. Merging is not: a dirty tree or a different branch means the user has
+    something of their own here, and quietly moving their HEAD would be the
+    kind of help nobody asked for. So that case fetches, says so, and leaves
+    the decision to the session that is about to open.
+
+    Returns a sentence describing what happened, for the brief and the UI."""
+    if not os.path.isdir(local_cwd):
+        return "%s does not exist on this Mac, so nothing was pulled." % local_cwd
+
+    inside = _git(local_cwd, "rev-parse", "--is-inside-work-tree", timeout=20)
+    if not (inside and inside.returncode == 0):
+        return "%s is not a git repo, so nothing was pulled." % local_cwd
+
+    fetched = _git(local_cwd, "fetch", "--all", "--prune")
+    if not (fetched and fetched.returncode == 0):
+        return "git fetch failed here (%s) - the box's work is not on this Mac yet." % (
+            (fetched.stderr or "").strip().splitlines()[-1] if fetched and fetched.stderr
+            else "no network?")
+
+    if not sha:
+        return ("Fetched. The box named no commit, so nothing was merged - "
+                "check what is on the branch before trusting the file list.")
+
+    # The push and this fetch are two machines racing; give the commit a while
+    # to turn up rather than declaring it missing on the first miss.
+    deadline = time.time() + PULL_WAIT
+    have = False
+    while True:
+        probe = _git(local_cwd, "cat-file", "-e", sha + "^{commit}", timeout=20)
+        have = bool(probe and probe.returncode == 0)
+        if have or time.time() > deadline:
+            break
+        time.sleep(PULL_POLL)
+        _git(local_cwd, "fetch", "--all", "--prune")
+
+    if not have:
+        return ("Commit %s never arrived here within %ds - the box may not have "
+                "finished pushing. Run git fetch and check before relying on "
+                "the files." % (sha[:12], PULL_WAIT))
+
+    dirty = _git(local_cwd, "status", "--porcelain", timeout=30)
+    dirty_n = len([l for l in (dirty.stdout or "").splitlines() if l.strip()]) \
+        if dirty else 0
+    head = _git(local_cwd, "rev-parse", "--abbrev-ref", "HEAD", timeout=20)
+    here = (head.stdout or "").strip() if head else ""
+
+    if dirty_n:
+        return ("Commit %s is on this Mac, but the local tree has %d "
+                "uncommitted path(s), so it was NOT merged. The files are in "
+                "git - merge or check them out when you have dealt with those."
+                % (sha[:12], dirty_n))
+    if branch and here and branch != here:
+        return ("Commit %s is on this Mac. This clone is on %s, not %s, so it "
+                "was not merged - switch branch if that is where the work "
+                "should land." % (sha[:12], here, branch))
+
+    merged = _git(local_cwd, "merge", "--ff-only", sha, timeout=120)
+    if merged and merged.returncode == 0:
+        return "Fast-forwarded %s to %s - the box's files are here." % (
+            here or "this clone", sha[:12])
+    return ("Commit %s is on this Mac but would not fast-forward (%s), so the "
+            "working tree is unchanged." % (
+                sha[:12],
+                (merged.stderr or "").strip().splitlines()[-1] if merged and merged.stderr
+                else "diverged"))
+
+
+def _seed_local_session(sid, brief):
+    """Plant the brief on this Mac and open Claude on it.
+
+    Same shape as the outbound seed and for the same reason: the text goes to a
+    file and the shell reads it, so prose full of quotes and backticks is never
+    parsed by anything."""
+    path = _brief_path(sid)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(brief)
+        os.chmod(path, 0o600)
+    except OSError as e:
+        return {"ok": False, "error": "could not write the brief locally: %s" % e}
+    return terminal_manager.write_session(
+        sid, 'B="$(cat %s)"; rm -f %s; claude "$B"\r' % (path, path))
+
+
+def bring_vps_to_local(sid, confirm=False, name=None):
+    """Hand a box session's work over to a new session on this Mac."""
+    if not _vps_enabled():
+        return {"ok": False, "error": "vps not configured"}
+
+    host, real = _split_sid(sid)
+    if host != "vps":
+        return {"ok": False, "error": "that session is already on this Mac"}
+
+    online, vps_sessions, _states, _plans, _files = _vps_snapshot()
+    sess = next((s for s in vps_sessions if s.get("realid") == real), None)
+    if not sess:
+        return {"ok": False, "error": "no such session on the box"}
+    if not online:
+        return {"ok": False, "error": "the box is not answering"}
+
+    vps_cwd, vps_repo = _vps_session_place(real)
+    if not vps_cwd:
+        return {"ok": False, "error":
+                "could not work out where that session is on the box"}
+    local_cwd = _map_path_from_vps(vps_cwd)
+    if not local_cwd:
+        return {"ok": False, "error":
+                "no local path is mapped for %s - add one under "
+                "Settings -> VPS -> Folder mapping" % vps_cwd}
+
+    # A local tree with uncommitted work cannot be fast-forwarded onto, so say
+    # so before spending a minute of the box's Claude on a brief.
+    dirty = _git_dirty(local_cwd)
+    if dirty and not confirm:
+        return {"ok": False, "needs_confirm": True, "cwd": local_cwd,
+                "vps_cwd": vps_cwd, "dirty": dirty[:40],
+                "dirty_total": len(dirty)}
+
+    # Only ask for a brief when Claude actually owns the prompt over there; a
+    # plain shell has no conversation to hand over, just a folder.
+    cmd = (sess.get("cmd") or "").strip().lower()
+    running_claude = (cmd in terminal_manager._AMBIGUOUS_RUNTIME
+                      or terminal_manager._looks_like_version(cmd))
+
+    header, body, sync = {}, "", ""
+    if running_claude:
+        remote_file = _remote_brief_path(vps_repo, vps_cwd, real)
+        typed = _request_remote_brief(real, remote_file)
+        if not (typed and typed.get("ok")):
+            return {"ok": False, "error": "could not prompt the box's session"}
+        text = _await_remote_brief(remote_file)
+        if not text:
+            return {"ok": False, "error":
+                    "the box's session did not produce a brief within %ds - it "
+                    "may be mid-task, waiting on a permission prompt, or its "
+                    "folder may be outside what its terminal can serve"
+                    % BRIEF_TIMEOUT}
+        header, body = _parse_handoff_header(text)
+        if header.get("CWD"):
+            # Trust the session over the diff endpoint: it knows where it is.
+            mapped = _map_path_from_vps(header["CWD"].rstrip("/"))
+            if mapped:
+                local_cwd = mapped
+        sync = _pull_box_work(local_cwd, header.get("BRANCH", ""),
+                              header.get("COMMIT", ""))
+    else:
+        sync = _pull_box_work(local_cwd, "", "")
+
+    if not os.path.isdir(local_cwd):
+        return {"ok": False, "error": "%s does not exist on this Mac" % local_cwd}
+
+    started = terminal_manager.start_session(
+        name or ("%s (VPS handover)" % sess.get("name", "session")),
+        cwd=local_cwd)
+    if not (started and started.get("ok") and started.get("session")):
+        return {"ok": False, "error": started.get("error") if started
+                else "could not start a local session"}
+    new = started["session"]
+
+    if body:
+        opening = (
+            "This work was handed over from a session on our VPS (\"%s\").\n\n"
+            "On the box it lives at %s; on this Mac it is %s, which is where "
+            "you are.\n\nGit: %s\n\nThe brief follows.\n\n---\n\n%s"
+            % (sess.get("name", "session"), vps_cwd, local_cwd, sync, body))
+        seeded = _seed_local_session(new["id"], opening)
+        if not (seeded and seeded.get("ok")):
+            return {"ok": True, "session": new, "cwd": local_cwd, "sync": sync,
+                    "briefed": False,
+                    "warning": "session started, but the brief did not land"}
+    else:
+        terminal_manager.write_session(new["id"], "cd %s\r" % local_cwd)
+
+    return {"ok": True, "session": new, "cwd": local_cwd, "vps_cwd": vps_cwd,
+            "sync": sync, "briefed": bool(body),
+            "pushed": (header.get("PUSHED", "") or "").lower().startswith("y")}
 
 
 # ── First-run setup ────────────────────────────────────────────────────────
@@ -1183,6 +1522,14 @@ class TerminalHandler(BaseHTTPRequestHandler):
                 sid, confirm=bool(data.get("confirm")), name=data.get("name")))
             return
 
+        # The same in reverse, and routed here for the same reason: it drives
+        # both machines, and it waits - on the box's Claude, then on git.
+        if path == "/api/terminal/bring-from-vps":
+            self._json(200, bring_vps_to_local(
+                data.get("sid", ""), confirm=bool(data.get("confirm")),
+                name=data.get("name")))
+            return
+
         host, real = _split_sid(data.get("sid", ""))
         if host == "vps":
             if not _vps_enabled():
@@ -1573,6 +1920,151 @@ def _run_setup_selftest():
     return 0
 
 
+def _run_handover_selftest():
+    """Prove the VPS -> Mac handover's own logic, without a VPS.
+
+    The parts that can be wrong quietly are the ones tested here: the path map
+    read backwards, the brief's header, telling a real file on the box from its
+    endpoint's JSON "not found", and - the one that actually moves work between
+    two machines - the git step. That last one runs against real repositories
+    created for the test, so "fetched", "fast-forwarded" and "refused to merge
+    into a dirty tree" are observed, not assumed. No tmux, no network.
+    """
+    import shutil
+    import tempfile
+
+    global VPS_PATH_MAP
+    failures = []
+
+    def check(cond, label):
+        if not cond:
+            failures.append(label)
+        print(("  ok   " if cond else "  FAIL ") + label)
+
+    tmpdir = tempfile.mkdtemp(prefix="mts-handover-test-")
+    saved_map = VPS_PATH_MAP
+    try:
+        # ── the path map, read backwards ──
+        VPS_PATH_MAP = {"~/Documents/AI-Hub": "/home/aihub/AI-Hub",
+                        "~/Documents/AI-Hub/clients": "/home/aihub/clients"}
+        home = os.path.expanduser("~")
+        check(_map_path_from_vps("/home/aihub/AI-Hub") == home + "/Documents/AI-Hub",
+              "a mapped box folder resolves to its Mac folder")
+        check(_map_path_from_vps("/home/aihub/AI-Hub/shared/x.py")
+              == home + "/Documents/AI-Hub/shared/x.py",
+              "a file below a mapped folder keeps its tail")
+        check(_map_path_from_vps("/home/aihub/clients/rm")
+              == home + "/Documents/AI-Hub/clients/rm",
+              "the longest matching prefix wins, not the first")
+        check(_map_path_from_vps("/srv/elsewhere") is None,
+              "an unmapped folder is refused rather than guessed at")
+        # The inverse of the outbound map, or a session could round-trip into a
+        # different folder than it started in.
+        VPS_PATH_MAP = {"~/Documents/AI-Hub": "/home/aihub/AI-Hub"}
+        there = _map_path_to_vps(home + "/Documents/AI-Hub/shared")
+        check(_map_path_from_vps(there) == home + "/Documents/AI-Hub/shared",
+              "out and back lands in the folder it started in")
+
+        # ── the brief's header ──
+        header, body = _parse_handoff_header(
+            "CWD: /home/aihub/AI-Hub\nBRANCH: feat/x\nCOMMIT: abc123\n"
+            "PUSHED: yes\n\nWe are building the thing.\n\nNext: ship it.")
+        check(header.get("CWD") == "/home/aihub/AI-Hub"
+              and header.get("BRANCH") == "feat/x"
+              and header.get("COMMIT") == "abc123"
+              and header.get("PUSHED") == "yes",
+              "the four header lines are read")
+        check(body.startswith("We are building") and "COMMIT" not in body,
+              "the body starts after the header, not inside it")
+        header, body = _parse_handoff_header(
+            "CWD: /home/aihub/AI-Hub\nBRANCH: -\nCOMMIT: -\nPUSHED: no\n\nNo repo here.")
+        check(header.get("BRANCH") == "" and header.get("COMMIT") == "",
+              "a dash means 'nothing', not the string '-'")
+        header, body = _parse_handoff_header("Just prose, no header at all.")
+        check(header == {} and body.startswith("Just prose"),
+              "a brief with no header is still a brief")
+
+        # ── where the box is told to write ──
+        check(_remote_brief_path("/home/aihub/AI-Hub", "/home/aihub/AI-Hub/x", "abc")
+              == "/home/aihub/AI-Hub/.git/mts-handoff-abc.md",
+              "the brief goes inside .git, where git never looks")
+        check(_remote_brief_path("", "/home/aihub/scratch", "abc")
+              == "/home/aihub/scratch/.mts-handoff-abc.md",
+              "with no repo it is a dotfile in the folder instead")
+
+        # ── git: the part that actually moves the work ──
+        def git(cwd, *a):
+            return subprocess.run(["git", *a], cwd=cwd, capture_output=True, text=True)
+
+        origin = os.path.join(tmpdir, "origin.git")
+        box = os.path.join(tmpdir, "box")
+        mac = os.path.join(tmpdir, "mac")
+        subprocess.run(["git", "init", "--bare", "-q", "-b", "main", origin],
+                       capture_output=True)
+        subprocess.run(["git", "clone", "-q", origin, box], capture_output=True)
+        for repo in (box,):
+            git(repo, "config", "user.email", "test@example.com")
+            git(repo, "config", "user.name", "Test")
+        open(os.path.join(box, "README.md"), "w").write("one\n")
+        git(box, "add", "-A"); git(box, "commit", "-qm", "first")
+        git(box, "push", "-q", "origin", "main")
+        subprocess.run(["git", "clone", "-q", origin, mac], capture_output=True)
+        git(mac, "config", "user.email", "test@example.com")
+        git(mac, "config", "user.name", "Test")
+
+        # The box builds something and pushes it, exactly as the handover asks.
+        open(os.path.join(box, "feature.py"), "w").write("print('built on the box')\n")
+        git(box, "add", "-A"); git(box, "commit", "-qm", "work from the box")
+        git(box, "push", "-q", "origin", "main")
+        sha = git(box, "rev-parse", "HEAD").stdout.strip()
+
+        check(not os.path.exists(os.path.join(mac, "feature.py")),
+              "the Mac has not got the box's file yet")
+        sync = _pull_box_work(mac, "main", sha)
+        check("Fast-forwarded" in sync, "a clean clone fast-forwards: " + sync)
+        check(os.path.exists(os.path.join(mac, "feature.py")),
+              "and the box's file is now really on the Mac")
+
+        # Now the same thing into a tree the user has been working in.
+        open(os.path.join(box, "second.py"), "w").write("print('more')\n")
+        git(box, "add", "-A"); git(box, "commit", "-qm", "more work")
+        git(box, "push", "-q", "origin", "main")
+        sha2 = git(box, "rev-parse", "HEAD").stdout.strip()
+        open(os.path.join(mac, "mine.txt"), "w").write("my own uncommitted work\n")
+
+        sync = _pull_box_work(mac, "main", sha2)
+        check("NOT be merged" in sync or "NOT merged" in sync,
+              "a dirty tree is fetched but not merged: " + sync)
+        have = git(mac, "cat-file", "-e", sha2 + "^{commit}")
+        check(have.returncode == 0, "the commit is on the Mac all the same")
+        check(not os.path.exists(os.path.join(mac, "second.py")),
+              "and the working tree was left exactly as the user had it")
+        check(open(os.path.join(mac, "mine.txt")).read().startswith("my own"),
+              "the user's own uncommitted file is untouched")
+
+        # A commit that was never pushed must be reported, not waited on for ever.
+        saved_wait = globals()["PULL_WAIT"]
+        globals()["PULL_WAIT"] = 0
+        try:
+            sync = _pull_box_work(mac, "main", "0" * 40)
+            check("never arrived" in sync, "an unpushed commit is reported: " + sync)
+        finally:
+            globals()["PULL_WAIT"] = saved_wait
+
+        sync = _pull_box_work(os.path.join(tmpdir, "not-a-repo"), "main", sha)
+        check("does not exist" in sync, "a missing local folder is reported")
+    finally:
+        VPS_PATH_MAP = saved_map
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    if failures:
+        print("handover selftest FAIL: %d check(s) failed" % len(failures),
+              file=sys.stderr)
+        return 1
+    print("VERIFY_OK")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Standalone local terminal server")
     parser.add_argument("--port", type=int, default=8722)
@@ -1580,7 +2072,7 @@ def main():
                         help="directory new terminal sessions start in")
     parser.add_argument("--vps-url", default=None,
                         help="base url of the :3333 dashboard to aggregate "
-                             "(e.g. http://72.62.195.38:3333)")
+                             "(e.g. http://192.0.2.10:3333)")
     parser.add_argument("--vps-token", default=None,
                         help="dashboard Bearer token for --vps-url")
     parser.add_argument("--selftest", action="store_true",
@@ -1592,6 +2084,10 @@ def main():
                         help="drive two real shells down one merged stream and "
                              "assert each one's output is tagged with its own "
                              "session, then exit")
+    parser.add_argument("--selftest-handover", action="store_true",
+                        help="exercise the VPS -> Mac handover's path map, brief "
+                             "header and git step against real throwaway repos, "
+                             "then exit (no tmux, no network)")
     args = parser.parse_args()
 
     # Set TERMINAL_HOME BEFORE importing terminal_manager: it reads the env var
@@ -1609,6 +2105,9 @@ def main():
         sys.exit(_run_multi_selftest())
     if args.selftest_setup:
         sys.exit(_run_setup_selftest())
+    if args.selftest_handover:
+        _import_manager()
+        sys.exit(_run_handover_selftest())
 
     # Resolve the optional VPS proxy (flags > env > the config's vps block).
     base, _tok = _load_vps_config(args.vps_url, args.vps_token)

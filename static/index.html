@@ -439,6 +439,7 @@
   <button id="ctxRename"><span class="k">&#9998;</span> Rename</button>
   <button id="ctxSave"><span class="k">&#9776;</span> Save for later</button>
   <button id="ctxSend"><span class="k">&#8593;</span> Send to VPS</button>
+  <button id="ctxBring"><span class="k">&#8595;</span> Bring to Mac</button>
   <div class="sep"></div>
   <button id="ctxClose" class="danger"><span class="k">&#10005;</span> Close session</button>
 </div>
@@ -778,6 +779,31 @@
       term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => openLink(uri)));
     } catch {}
     term.open(container);
+
+    // Marking text puts it on the clipboard, full stop - no second action, ⌘V
+    // works straight away. It is done here, inside the mouseup, rather than off
+    // a debounce or xterm's onSelectionChange: a clipboard write needs the
+    // user gesture that is still live during the event, and a timer would have
+    // dropped it. mouseup is also exactly the end of the drag, and it covers
+    // double-click (word) and triple-click (line) for free.
+    container.addEventListener('mouseup', () => {
+      const text = term.getSelection();
+      if (text) copyText(text);
+    });
+
+    // ⌘C with a selection is Copy. Without one it is left alone, so ⌘C stays
+    // whatever the shell makes of it (Claude Code's interrupt, mostly).
+    // Ctrl+Shift+C is the same thing for a keyboard that has no ⌘.
+    term.attachCustomKeyEventHandler(ev => {
+      if (ev.type !== 'keydown') return true;
+      const combo = ev.metaKey || (ev.ctrlKey && ev.shiftKey);
+      if (combo && (ev.key === 'c' || ev.key === 'C') && term.hasSelection()) {
+        ev.preventDefault();
+        copyText(term.getSelection());
+        return false;
+      }
+      return true;
+    });
 
     const pane = { term, fit, container, abort: null, connected: false, name, exited: false };
     panes[sid] = pane;
@@ -1916,9 +1942,13 @@
 
   function openCtx(x, y, nm, s) {
     ctxTarget = { nm, s };
-    // Only a local session can be handed over, and only when the box answers.
+    // Handover, whichever way round it is: a local session goes to the box, a
+    // box session comes here. Either needs the box to be answering.
+    const linked = vpsInfo.enabled && vpsInfo.online;
     document.getElementById('ctxSend').style.display =
-      (s.host !== 'vps' && vpsInfo.enabled && vpsInfo.online) ? '' : 'none';
+      (s.host !== 'vps' && linked) ? '' : 'none';
+    document.getElementById('ctxBring').style.display =
+      (s.host === 'vps' && linked) ? '' : 'none';
     document.getElementById('ctxSave').innerHTML = isSaved(s.id)
       ? '<span class="k">&#8617;</span> Restore from saved'
       : '<span class="k">&#9776;</span> Save for later';
@@ -1998,6 +2028,58 @@
       () => sendToVps(t.s, false));
   });
 
+  // ── bring a box session's work back here ─────────────────────────────────
+  // The mirror of the above, plus the files: the box commits and pushes, this
+  // Mac pulls, and only then does a local session open on the brief. The box
+  // session keeps running, exactly as the local one does going the other way.
+  function bringFromVps(s, confirm) {
+    toast(confirm ? 'Bringing "' + s.name + '" over...'
+                  : 'Asking "' + s.name + '" to push its work and write a brief...');
+    fetch('/api/terminal/bring-from-vps', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid: s.id, confirm: !!confirm })
+    }).then(r => r.json()).then(res => {
+      // Uncommitted work here means the pull cannot fast-forward, so the files
+      // would arrive in git but not in the tree. The user's call.
+      if (res && res.needs_confirm) {
+        const shown = res.dirty.slice(0, 8).join('\n');
+        const more  = res.dirty_total > 8
+          ? '\n...and ' + (res.dirty_total - 8) + ' more' : '';
+        askConfirm(
+          'Uncommitted work in ' + res.cwd,
+          res.dirty_total + ' uncommitted path(s) on this Mac. The box\'s commit '
+            + 'will be fetched either way, but it will not be merged into a dirty '
+            + 'tree - you would have to merge it yourself afterwards.\n\n'
+            + shown + more,
+          'Bring it anyway',
+          () => bringFromVps(s, true));
+        return;
+      }
+      if (!res || !res.ok) {
+        toast(res && res.error ? res.error : 'Handover failed');
+        return;
+      }
+      if (res.warning) toast(res.warning);
+      else if (res.briefed && res.pushed === false)
+        toast('Handed over, but the box could not push - see the brief');
+      else toast(res.briefed ? 'Handed over to this Mac'
+                             : 'Opened here in ' + res.cwd);
+      refreshSessions().then(() => { if (res.session) switchTo(res.session.id); });
+    }).catch(() => toast('Handover failed'));
+  }
+
+  document.getElementById('ctxBring').addEventListener('click', () => {
+    const t = ctxTarget; closeCtx();
+    if (!t) return;
+    askConfirm('Bring "' + t.s.name + '" to this Mac?',
+      'The box session keeps running. It will be asked to commit and push its '
+        + 'work and write a handoff brief; this Mac then fetches that commit, '
+        + 'and a new local session opens on the brief in the matching folder. '
+        + 'It can take a minute or two.',
+      'Bring to Mac',
+      () => bringFromVps(t.s, false));
+  });
+
   // Stash or unstash. Nothing is stopped either way - a saved session goes on
   // running, which is the point of keeping one for a few days.
   document.getElementById('ctxSave').addEventListener('click', () => {
@@ -2059,6 +2141,65 @@
     if (ev.key === 'Escape') { ev.preventDefault(); closeConfirm(); }
     else if (ev.key === 'Enter') { ev.preventDefault(); const f = confirmOnOk; closeConfirm(); if (f) f(); }
   });
+
+  // ── copy: a terminal selection -> the system clipboard ────────────────────
+  // xterm keeps its own selection model. The highlighted text is NOT a DOM
+  // selection, so WebKit's own Copy - the Edit menu item, and therefore ⌘C -
+  // finds nothing to copy and silently leaves the clipboard holding whatever
+  // was in it before. That is the whole "it looks copied but nothing pastes"
+  // bug: the copy never happened, and nothing said so. So we own the copy.
+  //
+  // Three routes, best first:
+  //   1. the native bridge -> NSPasteboard. No user-gesture rule, no
+  //      secure-context rule, and it cannot half-succeed. The .app's path.
+  //   2. navigator.clipboard, for a plain browser. 127.0.0.1 is a secure
+  //      context, so it is available - but it wants a live user gesture,
+  //      which is why every caller copies from inside the event.
+  //   3. execCommand on a throwaway textarea, focus captured and put back.
+  //      Focus-flaky, hence last, but it is the only thing left on an old
+  //      browser or a page served over plain http from another host.
+  const clipBridge = () => (window.webkit && window.webkit.messageHandlers
+                            && window.webkit.messageHandlers.mts) || null;
+
+  function clipViaTextarea(text) {
+    const active = document.activeElement;
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:-1000px;left:-1000px;opacity:0';
+    document.body.appendChild(ta);
+    let ok = false;
+    try {
+      ta.focus(); ta.select();
+      ok = document.execCommand('copy');
+    } catch (e) { ok = false; }
+    ta.remove();
+    // Put focus back where it was, or the terminal stops taking keystrokes
+    // the moment you copy something out of it.
+    if (active && active.focus) { try { active.focus(); } catch (e) {} }
+    return ok;
+  }
+
+  function copyText(text) {
+    if (!text) return;
+    const n = text.length;
+    const said = () => toast('Copied ' + n + ' character' + (n === 1 ? '' : 's'));
+
+    const bridge = clipBridge();
+    if (bridge) { bridge.postMessage({ cmd: 'copy', text: text }); said(); return; }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(said, () => {
+        // Rejected (no gesture, or the permission was refused) - the textarea
+        // still works from inside the same event, so try it before giving up.
+        if (clipViaTextarea(text)) said();
+        else toast('Could not copy - the browser blocked it');
+      });
+      return;
+    }
+    if (clipViaTextarea(text)) said();
+    else toast('Could not copy - the browser blocked it');
+  }
 
   // ── image / file upload: browser -> session (paste, drop, or Attach) ──────
   // Uploads the bytes to the session's .uploads dir and types the returned path

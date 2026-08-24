@@ -132,13 +132,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
         }
     }
 
-    // MARK: - Folder picker
+    // MARK: - Bridge from the page
     //
-    // The setup screen and the settings panel both need a folder from the user.
-    // A web page cannot open one, so it asks us: window.webkit.messageHandlers
-    // .mts.postMessage({cmd: "pickFolder"}) -> NSOpenPanel -> the chosen path is
-    // handed back to window.__mtsFolderPicked. The page falls back to its own
-    // folder list when this bridge is absent (i.e. in a plain browser).
+    // The few things a web page cannot do for itself, it asks us for, over
+    // window.webkit.messageHandlers.mts.postMessage({cmd: ...}):
+    //
+    //   pickFolder - the setup screen and the settings panel both need a folder
+    //     from the user. NSOpenPanel -> the chosen path goes back to
+    //     window.__mtsFolderPicked. The page falls back to its own folder list
+    //     when this bridge is absent (i.e. in a plain browser).
+    //   popOut     - a session gets its own real window.
+    //   copy       - text onto the system pasteboard.
+    //
+    // Everything here is best-effort and one-way: an unknown command is logged
+    // and ignored, so a newer page against an older app degrades rather than
+    // breaks.
 
     func userContentController(_ controller: WKUserContentController,
                                didReceive message: WKScriptMessage) {
@@ -153,6 +161,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
             popOut(sid: sid,
                    path: body["url"] as? String ?? "/?solo=\(sid)",
                    title: body["title"] as? String ?? sid)
+        case "copy":
+            // The terminal's selection is xterm's own, not a DOM selection, so
+            // WebKit's Copy has nothing to put on the pasteboard. The page
+            // hands us the text instead and we write it ourselves - no user
+            // gesture to lose, nothing to half-succeed.
+            guard let text = body["text"] as? String, !text.isEmpty else { return }
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(text, forType: .string)
         default:
             NSLog("Ignoring unknown bridge command: \(cmd)")
         }

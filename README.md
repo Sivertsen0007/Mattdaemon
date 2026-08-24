@@ -101,6 +101,25 @@ gets its own `+`, so a session can be started on either machine.
 Until someone connects one, there is no VPS section and no mention of it outside
 Settings: a fresh install is a purely local terminal.
 
+## Copy and paste
+
+**Marking text copies it.** Drag across anything in a terminal and it is on the
+clipboard when you let go - no second action, ⌘V works straight away. ⌘C does
+the same for whatever is selected, and is left alone when nothing is, so it
+stays the interrupt the shell expects.
+
+Worth saying why this needed writing at all: xterm keeps its own selection
+model, so the highlighted text is not a DOM selection. WebKit's own Copy - the
+Edit menu item, and therefore ⌘C - had nothing to copy, and quietly left the
+clipboard holding whatever was in it before. The app owns the copy now: in the
+`.app` it goes over the bridge to `NSPasteboard`, which has no user-gesture and
+no secure-context rule to trip over; in a browser it uses `navigator.clipboard`,
+falling back to a hidden textarea with focus saved and restored. It says
+"Copied" only when one of those actually succeeded.
+
+Pasting in is unchanged: ⌘V types into the shell, and a pasted screenshot is
+uploaded into the session instead.
+
 ## Send a session to the VPS
 
 Right-click a local session -> **Send to VPS**. A running process cannot be
@@ -123,6 +142,45 @@ conversation to hand over, so it is simply reopened in the mapped folder.
 The mapping is per user, set in **Settings -> VPS -> Folder mapping**, one
 `local = remote` per line. There is no built-in default: one machine's folder
 layout is nobody else's.
+
+## Bring a session back from the VPS
+
+Right-click a **VPS** session -> **Bring to Mac**. The mirror of the above, with
+the part the outbound direction does not need: the files.
+
+Going out, the box already has its own clone and only needs to know what to do.
+Coming back, this Mac is behind by whatever the box has been building, so a
+brief on its own would describe files that are not here. So:
+
+1. The box's Claude is asked to **commit and push** its work first, then write
+   the brief - which starts with a fixed `CWD / BRANCH / COMMIT / PUSHED`
+   header, so this end knows exactly which commit to wait for.
+2. This Mac fetches until that commit is actually here, and **fast-forwards**
+   the local clone to it.
+3. A local session opens in the matching folder, named `<the VPS name> (VPS
+   handover)`, with Claude started on the brief - and the brief it gets is
+   prefixed with where the work came from and exactly what git did.
+4. **The VPS session keeps running.** Nothing closes it.
+
+Git is deliberately two separate steps. Fetching is always safe and is what
+brings the files across, so it happens whatever state the tree is in. Merging is
+not: an uncommitted local tree, or a clone sitting on a different branch, means
+you have something of your own here, and moving your HEAD under you would be
+help nobody asked for. That case fetches, says so in plain words, and leaves the
+decision to the session that is about to open. A dirty tree is flagged *before*
+the box is asked for anything, so a minute of its Claude is not spent on a
+handover you then cancel.
+
+The brief is read back off the box through its own file endpoint, so no shell
+is needed on the far side. It is written into the repo's `.git` directory:
+inside the folder that endpoint serves, and somewhere git itself never looks, so
+a handover never leaves a stray file in the working tree. The file does stay
+there afterwards - the box's pane is busy running Claude, so there is nothing to
+type an `rm` into. `find . -name 'mts-handoff-*.md' -path '*/.git/*'` clears them
+if they ever bother you.
+
+The folder mapping is the same one, read backwards, so a session sent out and
+brought back lands in the folder it started in.
 
 ## Change the working directory
 
@@ -190,6 +248,27 @@ Setup has its own two, plus a browser pass:
   requirements detected, the home directory (not anyone's project) pre-filled, a
   bad folder refused with a reason, the existing login recognised, the summary
   correct, and the app on screen with `setupComplete` written - no JS errors.
+
+Copy is verified where it was broken - against a real terminal, reading the real
+clipboard. A Playwright pass opens a session, echoes a token, drags the mouse
+across it, and asserts the *system clipboard* now holds exactly that text (the
+clipboard is loaded with something else first, so "it was already there" cannot
+pass for a copy); then clears it and proves ⌘C does the same. The toast is
+checked too, because "it said Copied and copied nothing" was the original bug.
+The `.app`'s leg of it - the bridge to `NSPasteboard` - rides the same
+`messageHandlers.mts` dispatch that the folder picker and pop-out windows
+already use, and the pasteboard write itself is asserted directly.
+
+The handover back from the box - `python3 server.py --selftest-handover`, no
+tmux and no network - covers the parts that could be wrong quietly. 20 checks:
+the folder map read backwards (longest prefix wins, an unmapped folder is
+refused, and out-and-back lands where it started), the brief's four header
+lines, a brief with no header at all, where the box is told to write it, and
+then the git step against **real throwaway repositories** - a clean clone
+fast-forwards and the box's file really appears on the Mac; a dirty tree gets
+the commit fetched but is *not* merged and the user's uncommitted file is
+untouched; a commit that was never pushed is reported rather than waited on for
+ever; a missing local folder is reported.
 
 `swift build -c release` compiles the app with the folder-picker bridge; run
 `./macapp/build.sh` on a Mac to produce the `.app` (Swift builds only on macOS).
