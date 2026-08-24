@@ -27,5 +27,17 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<!-- What the permission dialogs say when macOS does ask. They do not stop
+	     the asking - only granting Full Disk Access once does that - but an
+	     unexplained "Mattdaemon wants access to your Documents" is a dialog
+	     nobody can make an informed decision about. -->
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Your terminal sessions run here, so Claude Code can read and edit the projects you open.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>So a session you open on the Desktop can read and edit the files in it.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>So a session can read files you have just downloaded.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>So a session opened on an external disk can read and edit the files on it.</string>
 </dict>
 </plist>

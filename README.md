@@ -182,6 +182,47 @@ if they ever bother you.
 The folder mapping is the same one, read backwards, so a session sent out and
 brought back lands in the folder it started in.
 
+## Grant it file access once, not every week
+
+macOS asks an app before it may read your Documents, Desktop or Downloads. That
+is fine once. It was happening again and again for a reason worth knowing:
+
+An **ad-hoc signed** app (`codesign -s -`, which is what a locally built app gets
+by default) has no signing identity, so the only thing macOS can identify it by
+is the hash of the binary itself - `designated => cdhash H"4f5962..."`. Rebuild
+the app and that hash changes, so as far as the privacy system is concerned this
+is a different app that happens to have the same name and icon, and every
+permission you granted the last one is gone.
+
+`./macapp/make-signing-cert.sh` fixes it, once. It creates a self-signed
+code-signing certificate in your login keychain and `build.sh` picks it up
+automatically from then on. The app is then identified by
+`identifier "com.mathiassivertsen.mlsuiteterminal" and certificate leaf H"..."` -
+bundle id plus certificate, neither of which a rebuild changes. Grant a
+permission once and every future build keeps it.
+
+Then grant it properly, once:
+
+**System Settings -> Privacy & Security -> Full Disk Access -> + -> Mattdaemon**
+
+Full Disk Access rather than folder-by-folder, because this is a terminal: the
+sessions in it run Claude Code against whatever project you open, and answering
+a dialog per folder for the rest of time is the thing you are trying to stop.
+It is the same grant people give Terminal.app and iTerm for the same reason.
+
+Two things worth knowing:
+
+- The certificate is self-signed and local. It is not a Developer ID, it does
+  not notarise anything, and it does not make the app distributable - it makes
+  *your* builds keep *your* permissions. Someone who clones this repo and builds
+  without running the script still gets a working ad-hoc build; it just forgets.
+- Sessions run inside a tmux server that outlives the app. A tmux server started
+  by an *older* copy of the app does not inherit the new grant, so if prompts
+  survive the change, that server is why: quit the app, `tmux -L mlsterm
+  kill-server` (this ends your local sessions), and reopen. New sessions from
+  then on are covered. Adding `~/.local/bin/tmux` to Full Disk Access as well
+  closes the same gap without losing anything.
+
 ## Change the working directory
 
 **Settings -> Working folder** (the gear at the bottom of the sidebar). It

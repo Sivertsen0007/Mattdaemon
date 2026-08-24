@@ -40,9 +40,27 @@ if [[ -e "$APP/Contents/Resources/mts-config.json" ]]; then
     exit 1
 fi
 
-# 3. Ad-hoc codesign so Gatekeeper lets a locally-built app launch.
-echo "==> Ad-hoc codesigning"
-codesign --force --deep --sign - "$APP"
+# 3. Codesign, so Gatekeeper lets a locally-built app launch.
+#
+#    With a signing identity if this Mac has one, and that is not cosmetic: an
+#    ad-hoc signature gives macOS nothing to identify the app by except the hash
+#    of the binary, so every rebuild reads as a brand new app and every privacy
+#    permission you granted - Documents, Desktop, Full Disk Access - is thrown
+#    away. Signed with a stable identity, the permissions you grant once keep
+#    working for every build after it.
+#
+#    Run ./make-signing-cert.sh once to create one. Without it this falls back
+#    to ad-hoc, which still builds and still runs - it just forgets.
+SIGN_ID="${MATTDAEMON_SIGN_ID:-Mattdaemon Local Signing}"
+if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; then
+    echo "==> Codesigning as \"$SIGN_ID\""
+    codesign --force --deep --sign "$SIGN_ID" "$APP"
+else
+    echo "==> Ad-hoc codesigning (no signing identity found)"
+    echo "    Privacy permissions will be forgotten on every rebuild."
+    echo "    Run ./make-signing-cert.sh once to stop that."
+    codesign --force --deep --sign - "$APP"
+fi
 
 echo "==> Done: $APP"
 echo "Run with: open $APP   (or: $APP/Contents/MacOS/MLSuiteTerminal for console logs)"
