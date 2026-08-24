@@ -281,8 +281,15 @@ Two lessons are baked into that logic:
   on a second monitor. Same page, same server, `?solo=<sid>` - no second terminal
   implementation to keep in step. The shell is a tmux session and outlives any window
   onto it, so closing one is not closing the session; the grid takes it back.
-- **Preview panel** - links and files a session produces open beside it, not in a
-  browser. The point is to see what a session is building without leaving it.
+- **Preview panel** - what a session *builds* opens beside it: its artifacts and
+  plans, and a dev server it started on loopback. The point is to see the thing
+  without leaving the terminal.
+- **Links go where they can actually be seen.** The panel is an iframe, and the
+  wider web declines to be framed - an artifact answers with
+  `x-frame-options: SAMEORIGIN`, a news site with `DENY` - so anything off this
+  machine opens in your default browser instead of leaving the panel blank. The
+  rule is by destination, not by trying it: to script, a refused cross-origin load
+  and a good one look identical, so there is nothing to detect and recover from.
 - **Right-click a session** - rename, save for later, close, and whichever handover
   direction applies.
 - **Survives sleep.** A Mac waking up leaves a TCP connection that is gone without
@@ -772,6 +779,7 @@ clipboard is the real clipboard, and the repositories are real repositories.
 | Handover: *no local path is mapped for …* | The folder has no entry in `path_map` | Settings → VPS → Folder mapping. Refusing beats dropping the session somewhere unrelated. |
 | Handover: *did not produce a brief within 300s* | The far session is mid-task, waiting on a permission prompt, or its folder is outside what its terminal can serve | Answer the prompt over there and try again. |
 | Handover: *commit never arrived* | The box could not push | Check its git remote and permissions; the brief says what it managed. |
+| A link opened in the browser, and I wanted it in the panel | Only this machine's own pages can be framed | Loopback and this server's artifacts preview in the panel; everything else would be refused by the site itself, so it is handed to the browser. |
 | Terminal frozen after the Mac wakes | The SSE relay died with the connection | It reconnects itself within 45 s. |
 | Gatekeeper refuses a copied `.app` | Ad-hoc / self-signed, from another Mac | Right-click → **Open** the first time, or `xattr -dr com.apple.quarantine Mattdaemon.app`. |
 | Second launch does nothing | Single-instance guard | It asks the running copy to show its window instead. If that one lost its window, this is what brings it back. |

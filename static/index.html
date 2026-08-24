@@ -1543,22 +1543,62 @@
   function previewUrlFor(raw) {
     try {
       const u = new URL(raw, location.href);
-      if (vpsInfo.host && u.host === vpsInfo.host && u.pathname === '/api/terminal/file') {
-        return '/api/terminal/file?host=vps&path='
+      // Something the box produced: fetched through this server's proxy, which
+      // also keeps its token out of the page - and makes it same-origin, so the
+      // panel can show it.
+      if (vpsInfo.host && u.host === vpsInfo.host
+          && (u.pathname === '/api/terminal/file' || u.pathname === '/api/terminal/plan')) {
+        return u.pathname + '?host=vps&path='
              + encodeURIComponent(u.searchParams.get('path') || '');
       }
       return raw;
     } catch { return raw; }
   }
 
+  /// Can the preview panel actually show this, or does it belong in a browser?
+  ///
+  /// The panel is an iframe, and the wider web declines to be framed. An
+  /// artifact answers with `x-frame-options: SAMEORIGIN`, a news site with
+  /// `DENY`, and the browser throws the response away - so clicking a link left
+  /// the panel open and permanently blank, which is not a loading problem, it
+  /// is a refusal. Nor can it be detected and recovered from: to script, a
+  /// refused cross-origin load and a perfectly good one look identical. So this
+  /// is decided by where the link points, not by trying it and hoping.
+  ///
+  /// What the panel is FOR still goes in it: what a session is building. That
+  /// is this server's own artifacts and plans (including the box's, proxied
+  /// above), and a dev server a session started on loopback - `ready on :3000`
+  /// is exactly the thing you want beside the terminal rather than in Safari.
+  /// Everything else opens where it works.
+  function framesHere(u) {
+    if (u.origin === location.origin) return true;
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+    const h = u.hostname;
+    return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]';
+  }
+
   function openLink(raw) {
+    const url = previewUrlFor(raw);
+    let target = null;
+    try { target = new URL(url, location.href); } catch {}
+
+    if (!target || !framesHere(target)) {
+      // In the .app this reaches the WKUIDelegate, which hands it to your
+      // default browser and declines to open a second web view.
+      // Deliberately the same call the panel's pop-out button makes, feature
+      // string and all: that one is known to reach the delegate, and a
+      // 'noopener' hint is enough for WebKit to route a new window elsewhere.
+      window.open(raw, '_blank');
+      toast('Opened in your browser');
+      return;
+    }
+
     let label = raw;
     try {
-      const u = new URL(raw, location.href);
-      label = decodeURIComponent((u.searchParams.get('path') || u.pathname)
-                                 .split('/').pop() || '') || u.host;
+      label = decodeURIComponent((target.searchParams.get('path') || target.pathname)
+                                 .split('/').pop() || '') || target.host;
     } catch {}
-    openTab('link:' + raw, label, previewUrlFor(raw));
+    openTab('link:' + raw, label, url);
   }
 
   /// Called on every states poll. Only a stamp that CHANGES opens a tab, and
