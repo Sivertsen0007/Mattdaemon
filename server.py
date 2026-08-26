@@ -187,6 +187,31 @@ def _vps_post(path, body, timeout=None):
         return {"ok": False, "error": "vps unreachable: %s" % e}
 
 
+def _vps_post_full(path, body, timeout=None):
+    """POST to the box and keep the BODY even on a non-2xx.
+
+    _vps_post throws the body away on an HTTPError, which is fine for calls whose
+    failures are all alike. It is not fine for a worktree removal: the box
+    answers 409 with {"dirty": true}, and that flag is the whole reason the
+    client knows to ask again with force. Losing it turns a refusal you can
+    recover from into a dead end that just says "vps http 409".
+    """
+    try:
+        data = json.dumps(body).encode()
+        req = urllib.request.Request(
+            VPS_BASE + path, data=data, method="POST",
+            headers={**_vps_headers(), "Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout or VPS_TIMEOUT) as r:
+            return r.status, json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode("utf-8", "replace"))
+        except Exception:
+            return e.code, {"ok": False, "error": "vps http %s" % e.code}
+    except Exception as e:
+        return 0, {"ok": False, "error": "vps unreachable: %s" % e}
+
+
 def _vps_start(name=None):
     """Start a session on the box and namespace the id it returns, so the
     frontend switches straight to the new vps: pane."""
@@ -318,6 +343,109 @@ def _start_vps_poller():
                 pass   # a poller that dies takes the VPS section with it
             time.sleep(_VPS_REFRESH)
     threading.Thread(target=loop, daemon=True, name="vps-poller").start()
+
+
+# How long a worktree call to the box may take. Not VPS_TIMEOUT: these three
+# wait on git against a whole checkout, not on a tmux round-trip.
+_WT_TIMEOUTS = {
+    "/api/terminal/worktree/create": 180,
+    "/api/terminal/worktree/add-session": 60,
+    "/api/terminal/worktree/remove": 120,
+}
+
+
+def _merged_repos():
+    """What each machine can cut a worktree from.
+
+    Two separate lists, never pooled: a path on the box means nothing here and
+    the other way round, so mixing them would offer you a folder that does not
+    exist on the machine you picked.
+    """
+    local = terminal_manager.list_repos()
+    hosts = {"local": {"repos": local.get("repos", []),
+                       "default": local.get("default", ""), "online": True}}
+
+    online, _s, _st, _pl, _fi = _vps_snapshot()
+    vps_online = bool(_vps_enabled() and online)
+    hosts["vps"] = {"repos": [], "default": "", "online": vps_online}
+    if vps_online:
+        remote = _vps_get("/api/terminal/repos")
+        if remote and remote.get("ok"):
+            hosts["vps"]["repos"] = remote.get("repos", [])
+            hosts["vps"]["default"] = remote.get("default", "")
+        else:
+            hosts["vps"]["online"] = False
+            hosts["vps"]["unsupported"] = True
+    # Cloning reaches the credential store of the machine the app runs on, so it
+    # is offered for this Mac only. The box has no token of its own yet.
+    return {"ok": True, "hosts": hosts, "can_clone": {"local": True, "vps": False}}
+
+
+def _merged_worktrees(with_dirty=False):
+    """Local worktree groups, then the box's - group ids and member sids namespaced.
+
+    A group id becomes the argument of every later call (add a session, remove
+    the worktree), so a local "email-fix" and a box "email-fix" must not share
+    one: without the prefix, the + on one folder would open a shell in the other.
+    Same `vps:` convention the session ids already use.
+
+    Each host answers for itself in `hosts`. The two are rarely on the same
+    branch - this Mac follows one checkout, the box another - so the form asks
+    the machine it is about to create on rather than assuming one global answer.
+    """
+    local = terminal_manager.list_worktree_groups(with_dirty=with_dirty)
+    groups = []
+    for g in local.get("worktrees", []):
+        g = dict(g)
+        g["host"] = "local"
+        groups.append(g)
+
+    hosts = {"local": {
+        "current_branch": local.get("current_branch", ""),
+        "folder": local.get("folder", ""),
+        "is_repo": local.get("is_repo", True),
+        "max_sessions": local.get("max_sessions", 6),
+        "online": True,
+    }}
+
+    online, _s, _st, _pl, _fi = _vps_snapshot()
+    vps_online = bool(_vps_enabled() and online)
+    hosts["vps"] = {"current_branch": "", "folder": "", "is_repo": True,
+                    "max_sessions": 6, "online": vps_online}
+    if vps_online:
+        remote = _vps_get("/api/terminal/worktrees")
+        if remote and remote.get("ok"):
+            for g in remote.get("worktrees", []):
+                g = dict(g)
+                g["realid"] = g.get("id", "")
+                g["id"] = SID_VPS_PREFIX + g.get("id", "")
+                g["sessions"] = [SID_VPS_PREFIX + s for s in (g.get("sessions") or [])]
+                g["host"] = "vps"
+                groups.append(g)
+            hosts["vps"].update({
+                "current_branch": remote.get("current_branch", ""),
+                "folder": remote.get("folder", ""),
+                # An older box does not send is_repo. Assume it is a repo rather
+                # than greying out the option on a box that works perfectly well.
+                "is_repo": remote.get("is_repo", True),
+                "max_sessions": remote.get("max_sessions", 6),
+            })
+        else:
+            # Reachable but this endpoint is not there: an older box, still
+            # serving sessions. Say so instead of offering a button that 404s.
+            hosts["vps"]["online"] = False
+            hosts["vps"]["unsupported"] = True
+
+    return {
+        "ok": True, "worktrees": groups, "hosts": hosts,
+        "vps": {"enabled": _vps_enabled(), "online": vps_online,
+                "host": urlparse(VPS_BASE).netloc if VPS_BASE else ""},
+        # Kept flat as well, for a client that has not learned about hosts yet.
+        "current_branch": hosts["local"]["current_branch"],
+        "is_repo": hosts["local"]["is_repo"],
+        "folder": hosts["local"]["folder"],
+        "max_sessions": hosts["local"]["max_sessions"],
+    }
 
 
 def _merged_sessions():
@@ -1189,6 +1317,21 @@ class TerminalHandler(BaseHTTPRequestHandler):
         if path == "/api/terminal/health":
             self._json(200, health())
             return
+        if path == "/api/terminal/worktrees":
+            # dirty=1 costs a `git status` per worktree, so the sidebar's poll
+            # leaves it off and only a deliberate check asks for it.
+            qs = parse_qs(urlparse(self.path).query)
+            want_dirty = (qs.get("dirty", [""])[0] or "") == "1"
+            self._json(200, _merged_worktrees(with_dirty=want_dirty))
+            return
+        if path == "/api/terminal/repos":
+            self._json(200, _merged_repos())
+            return
+        if path == "/api/terminal/github/repos":
+            # This Mac's credential store only. Nothing of the token reaches the
+            # page - it is read, used, and dropped inside this process.
+            self._json(200, terminal_manager.github_repos())
+            return
         if path == "/api/terminal/plan":
             self._serve_plan()
             return
@@ -1506,6 +1649,85 @@ class TerminalHandler(BaseHTTPRequestHandler):
                 self._json(200, _vps_start(data.get("name")))
                 return
             self._json(200, terminal_manager.start_session(data.get("name")))
+            return
+
+        if path == "/api/terminal/github/clone":
+            # Local only: cloning uses this machine's git credentials, and the
+            # box has none of its own.
+            if self._blocked_by_setup():
+                return
+            result = terminal_manager.clone_repo(
+                data.get("repo", ""), data.get("dest"), data.get("name"))
+            self._json(200 if result.get("ok") else 400, result)
+            return
+
+        # Worktree calls route on a host, like /start does, and are handled
+        # before the vps: sid split below because they carry a worktree id
+        # rather than a session id. A create says which machine outright; add
+        # and remove carry a namespaced group id, so the prefix answers for them
+        # even if the client forgot to say.
+        if path in ("/api/terminal/worktree/create",
+                    "/api/terminal/worktree/add-session",
+                    "/api/terminal/worktree/remove"):
+            wid = str(data.get("id") or "")
+            host = data.get("host") or ("vps" if wid.startswith(SID_VPS_PREFIX) else "local")
+
+            if host == "vps":
+                if not _vps_enabled():
+                    self._json(404, {"ok": False, "error": "vps not configured"})
+                    return
+                body = dict(data)
+                body.pop("host", None)
+                if wid:
+                    body["id"] = _split_sid(wid)[1]   # the box knows its own id
+                # VPS_TIMEOUT is six seconds, which is right for a keystroke and
+                # far too short for git. `git worktree add` on a twelve-thousand
+                # file checkout takes tens of seconds, and a client that gives up
+                # first does NOT stop the box: it finishes, and you are left with
+                # a worktree and its shells that nothing on this side asked to
+                # keep. Removal has the same shape - it kills sessions and
+                # deletes a checkout before it can answer.
+                code, res = _vps_post_full(path, body, timeout=_WT_TIMEOUTS[path])
+                # Namespace whatever came back, so the frontend can switch
+                # straight to the new pane and match it to the merged listing.
+                if res.get("ok"):
+                    if res.get("worktree", {}).get("id"):
+                        res["worktree"] = dict(res["worktree"])
+                        res["worktree"]["realid"] = res["worktree"]["id"]
+                        res["worktree"]["id"] = SID_VPS_PREFIX + res["worktree"]["id"]
+                        res["worktree"]["host"] = "vps"
+                    for s in res.get("sessions", []) or []:
+                        s["realid"] = s.get("id", "")
+                        s["id"] = SID_VPS_PREFIX + s.get("id", "")
+                        s["host"] = "vps"
+                    if res.get("session"):
+                        res["session"] = dict(res["session"])
+                        res["session"]["realid"] = res["session"].get("id", "")
+                        res["session"]["id"] = SID_VPS_PREFIX + res["session"].get("id", "")
+                        res["session"]["host"] = "vps"
+                self._json(code if code else 502, res)
+                return
+
+            if path == "/api/terminal/worktree/create":
+                if self._blocked_by_setup():
+                    return
+                result = terminal_manager.create_worktree_group(
+                    data.get("name", ""), data.get("base"), data.get("count", 1),
+                    bool(data.get("autostart")), data.get("repo"))
+                self._json(200 if result.get("ok") else 400, result)
+                return
+            if path == "/api/terminal/worktree/add-session":
+                if self._blocked_by_setup():
+                    return
+                result = terminal_manager.add_session_to_worktree(
+                    wid, data.get("name"), bool(data.get("autostart")))
+                self._json(200 if result.get("ok") else 400, result)
+                return
+            # A removal refusal is a 409, not a 400: the request was well formed
+            # and the client is expected to ask again with force.
+            result = terminal_manager.remove_worktree_group(wid, bool(data.get("force")))
+            code = 200 if result.get("ok") else (409 if result.get("dirty") else 400)
+            self._json(code, result)
             return
 
         # Handing a local session over to the box is neither a local nor a

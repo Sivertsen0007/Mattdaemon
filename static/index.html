@@ -104,6 +104,91 @@
     color:#0b0b0c;background:#f2f2f3;border:1px solid #f2f2f3;font-family:'JetBrains Mono',monospace}
   .btn-new:hover{background:#fff}
   .btn-new:disabled{opacity:.5;cursor:default}
+
+  /* ---- new session / new worktree, side by side ---- */
+  .new-row{display:flex;gap:6px}
+  .new-row .btn-new{flex:1;min-width:0}
+  .btn-wt{flex:none;padding:10px 11px;font-size:13px;border-radius:6px;cursor:pointer;
+    background:transparent;border:1px solid var(--border);color:var(--inkMute);
+    font-family:'JetBrains Mono',monospace}
+  .btn-wt:hover{border-color:#3a3a3f;color:var(--ink);background:#202023}
+  .btn-wt:disabled{opacity:.4;cursor:default}
+
+  /* ---- a worktree, drawn as a folder of sessions ---- */
+  .sess-section.sec-wt{cursor:pointer;user-select:none;flex-wrap:wrap;padding-bottom:4px}
+  .sess-section.sec-wt:hover .sec-host{color:var(--ink)}
+  /* The branch takes its own line under the name. Side by side in a 216px rail
+     the two fight, and the name - the thing you pick a group by - is what loses. */
+  .sess-section .sec-branch{flex:0 0 100%;max-width:100%;margin:1px 0 0 16px;
+    text-transform:none;letter-spacing:0;font-weight:500;font-size:10px;
+    color:var(--inkDim);font-family:'JetBrains Mono',monospace;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .sess-section .sec-rm{flex:none;width:18px;height:18px;line-height:16px;text-align:center;
+    border:1px solid var(--border);border-radius:4px;color:var(--inkMute);cursor:pointer;
+    background:transparent;font-family:inherit;font-size:12px;padding:0}
+  .sess-section .sec-rm:hover{border-color:var(--stAttention);color:var(--stAttention);background:#202023}
+  /* nested under their worktree, so the folder reads as one thing */
+  .sess.in-wt{margin-left:9px;border-left:1px solid var(--border);border-radius:0 6px 6px 0}
+  .wt-empty{margin-left:9px;border-left:1px solid var(--border);padding:7px 10px;
+    font-size:11px;color:var(--inkDim)}
+
+  /* ---- the new-worktree form, in the confirm modal's clothes ---- */
+  .wt-field{margin-bottom:12px}
+  .wt-field label{display:block;font-size:10px;font-weight:600;letter-spacing:.12em;
+    text-transform:uppercase;color:var(--inkDim);margin-bottom:5px}
+  .wt-field input{width:100%;box-sizing:border-box;background:#0f0f10;border:1px solid var(--border);
+    border-radius:6px;color:var(--ink);font-family:'JetBrains Mono',monospace;font-size:12.5px;
+    padding:8px 10px}
+  .wt-field input:focus,.wt-field select:focus{outline:none;border-color:#45454b}
+  .wt-field select{width:100%;box-sizing:border-box;background:#0f0f10;
+    border:1px solid var(--border);border-radius:6px;color:var(--ink);
+    font-family:'JetBrains Mono',monospace;font-size:12.5px;padding:8px 10px;cursor:pointer}
+  /* ---- clone from GitHub ---- */
+  .gh-list{max-height:190px;overflow-y:auto;border:1px solid var(--border);
+    border-radius:6px;margin:0 0 12px}
+  .gh-item{display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;
+    font-size:12px;color:var(--inkMute);border-bottom:1px solid rgba(255,255,255,.04)}
+  .gh-item:last-child{border-bottom:none}
+  .gh-item:hover{background:#17171a}
+  .gh-item.on{background:#1e1e21;color:var(--ink)}
+  .gh-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    font-family:'JetBrains Mono',monospace}
+  .gh-tag{flex:none;font-size:9.5px;color:var(--inkDim);border:1px solid var(--border);
+    border-radius:4px;padding:1px 5px}
+  .gh-empty{padding:14px 10px;font-size:11.5px;color:var(--inkDim);text-align:center}
+  .wt-check{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--inkMute);
+    cursor:pointer;margin-bottom:16px}
+  /* label on the left, the one action that belongs to this field on the right -
+     out of the options list, where a verb among nouns read as a repo */
+  .wt-labelrow{display:flex;align-items:baseline;justify-content:space-between;gap:8px}
+  .wt-labelrow label{margin-bottom:5px}
+  .wt-link{background:none;border:none;padding:0;cursor:pointer;font-family:inherit;
+    font-size:10.5px;color:var(--accent,#c8a24b);text-decoration:underline;
+    text-underline-offset:2px;margin-bottom:5px}
+  .wt-link:hover{color:var(--ink)}
+  /* main / current, so the base is a choice you make rather than one you inherit */
+  .wt-bases{display:flex;gap:6px;margin-bottom:6px}
+  .wt-base{flex:1;min-width:0;padding:5px 8px;font-size:11px;border-radius:5px;cursor:pointer;
+    background:transparent;border:1px solid var(--border);color:var(--inkMute);
+    font-family:'JetBrains Mono',monospace;overflow:hidden;text-overflow:ellipsis;
+    white-space:nowrap}
+  .wt-base:hover:not(:disabled){border-color:#3a3a3f;color:var(--ink)}
+  .wt-base.on{background:#1e1e21;border-color:#45454b;color:var(--ink)}
+  .wt-base:disabled{opacity:.35;cursor:default}
+  .wt-hosts{display:flex;gap:6px}
+  .wt-host{flex:1;padding:7px 10px;font-size:12px;border-radius:6px;cursor:pointer;
+    background:transparent;border:1px solid var(--border);color:var(--inkMute);
+    font-family:'JetBrains Mono',monospace}
+  .wt-host:hover:not(:disabled){border-color:#3a3a3f;color:var(--ink)}
+  .wt-host.on{background:#1e1e21;border-color:#45454b;color:var(--ink)}
+  .wt-host:disabled{opacity:.4;cursor:default}
+  /* which checkout it will branch from - the two machines are rarely the same */
+  .wt-folder{font-size:10.5px;color:var(--inkDim);font-family:'JetBrains Mono',monospace;
+    margin:-6px 0 12px;line-height:1.5;overflow-wrap:anywhere}
+  .modal .btn-go{background:#f2f2f3;border-color:#f2f2f3;color:#0b0b0c;font-weight:600}
+  .modal .btn-go:hover{background:#fff}
+  .modal .btn-go:disabled{opacity:.5;cursor:default}
+  .wt-warn{font-size:11px;color:var(--stAttention);line-height:1.5;margin:0 0 14px}
   .side-label{font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;
     color:#54545a;padding:4px 6px 0;font-family:'JetBrains Mono',monospace}
   .sess-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
@@ -398,7 +483,10 @@
   <div class="body">
     <!-- sidebar -->
     <aside class="sidebar">
-      <button class="btn-new" id="btnNew">+ New session</button>
+      <div class="new-row">
+        <button class="btn-new" id="btnNew">+ New session</button>
+        <button class="btn-wt" id="btnWt" title="New worktree - an isolated checkout on its own branch, with its own sessions">&#9282;</button>
+      </div>
 
       <div class="sess-list" id="sessList"></div>
 
@@ -460,6 +548,78 @@
     <div class="modal-actions">
       <button class="btn-cancel" id="confirmCancel">Cancel</button>
       <button class="btn-danger" id="confirmOk">Close session</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── new worktree ─────────────────────────────────────────────────────────
+     One isolated checkout on its own branch, and the sessions that open in it.
+     Same modal clothes as the confirm above, with a form in it. -->
+<div class="modal-backdrop" id="wtBackdrop">
+  <div class="modal">
+    <div class="modal-title">New worktree</div>
+    <div class="modal-msg">An isolated checkout on its own branch, with its own sessions. Your folder is untouched.</div>
+    <div class="wt-warn" id="wtWarn" style="display:none"></div>
+    <div class="wt-field">
+      <label>Create on</label>
+      <div class="wt-hosts">
+        <button type="button" class="wt-host on" id="wtHostLocal">This Mac</button>
+        <button type="button" class="wt-host" id="wtHostVps">VPS</button>
+      </div>
+    </div>
+    <div class="wt-field">
+      <div class="wt-labelrow">
+        <label for="wtRepoSel">Repository on this Mac</label>
+        <button type="button" class="wt-link" id="wtCloneLink">Clone from GitHub</button>
+      </div>
+      <select id="wtRepoSel"></select>
+    </div>
+    <div class="wt-folder" id="wtFolder"></div>
+    <div class="wt-field">
+      <label for="wtName">Name</label>
+      <input type="text" id="wtName" placeholder="email fix" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="wt-field">
+      <label for="wtBase">Base branch</label>
+      <div class="wt-bases">
+        <button type="button" class="wt-base" id="wtBaseMain"></button>
+        <button type="button" class="wt-base" id="wtBaseCur"></button>
+      </div>
+      <input type="text" id="wtBase" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="wt-field">
+      <label for="wtCount">Sessions</label>
+      <input type="number" id="wtCount" min="1" max="6" value="2">
+    </div>
+    <label class="wt-check"><input type="checkbox" id="wtAuto"> Run claude in each session</label>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="wtCancel">Cancel</button>
+      <button class="btn-go" id="wtGo">Create</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── clone from GitHub ────────────────────────────────────────────────────
+     A worktree needs a checkout on this machine, so this is the one place
+     GitHub comes into it: fetch a repo you do not have yet, and it can then be
+     worktreed like any other. The token never leaves the server process. -->
+<div class="modal-backdrop" id="ghBackdrop">
+  <div class="modal">
+    <div class="modal-title">Clone from GitHub</div>
+    <div class="modal-msg">Fetch a repository onto this Mac. It joins the list straight away.</div>
+    <div class="wt-warn" id="ghWarn" style="display:none"></div>
+    <div class="wt-field">
+      <label for="ghFilter">Search</label>
+      <input type="text" id="ghFilter" placeholder="mlsuite" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="gh-list" id="ghList"><div class="gh-empty">Loading...</div></div>
+    <div class="wt-field">
+      <label for="ghDest">Clone into</label>
+      <input type="text" id="ghDest" autocomplete="off" spellcheck="false">
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="ghCancel">Cancel</button>
+      <button class="btn-go" id="ghGo">Clone</button>
     </div>
   </div>
 </div>
@@ -682,6 +842,7 @@
   // the status chip.
   const chipEl     = document.getElementById('termChip');
   const btnNew     = document.getElementById('btnNew');
+  const btnWt      = document.getElementById('btnWt');
 
   // One live xterm "pane" per session id, kept alive so scrollback and the
   // stream are not destroyed when you switch away and back.
@@ -1914,6 +2075,571 @@
     return h;
   }
 
+  // ── worktree groups ───────────────────────────────────────────────────────
+  // One git worktree, several shells whose cwd is inside it, drawn as a folder.
+  // Membership is not tracked here: the server stamps @webworktree on each tmux
+  // session, so it arrives with the listing and there is no bookkeeping on this
+  // side that could disagree with the shells that actually exist.
+  let worktrees = [];        // [{id, name, branch, path, sessions, missing}]
+  let wtSids = new Map();    // sid -> worktree id
+  let wtSig = '';            // membership fingerprint, to skip idle repaints
+  // Each machine answers for itself: they are rarely on the same branch, and
+  // only one of them may even be reachable.
+  let wtHosts = {
+    local: { current_branch: '', folder: '', is_repo: true, max_sessions: 6, online: true },
+    vps:   { current_branch: '', folder: '', is_repo: true, max_sessions: 6, online: false },
+  };
+  let wtVps = { enabled: false, online: false, host: '' };
+  // Which machine the form creates on. Sticky and remembered across restarts:
+  // someone whose work lives on the box would otherwise re-pick it every single
+  // time. It is safe to remember because the choice is never implicit - the
+  // chosen button is lit and the folder it will branch from is printed directly
+  // underneath, named by machine.
+  let wtHost = loadPref('wtHost', 'local') === 'vps' ? 'vps' : 'local';
+  const wtCollapsed = new Set(loadPref('wtCollapsed', []));
+
+  // Which repo each machine will cut from. Per host, because a path on the box
+  // means nothing here and the other way round.
+  let wtRepos = { local: { repos: [], default: '', online: true },
+                  vps:   { repos: [], default: '', online: false } };
+  let wtCanClone = { local: true, vps: false };
+  let wtRepoPick = loadPref('wtRepo', {}) || {};
+
+  function wtHostInfo(h) { return wtHosts[h] || wtHosts.local; }
+  function wtRepoInfo(h) { return wtRepos[h] || wtRepos.local; }
+  function wtRepoList(h) { return wtRepoInfo(h).repos || []; }
+  function wtRepoEntry(h, path) {
+    return wtRepoList(h).find(r => r.path === path) || null;
+  }
+  function wtSelectedRepo(h) {
+    const list = wtRepoList(h);
+    const want = wtRepoPick[h] || wtRepoInfo(h).default;
+    if (want && list.some(r => r.path === want)) return want;
+    return wtRepoInfo(h).default || (list[0] ? list[0].path : '');
+  }
+
+  // Scanning for repos is real work, so it happens when the form opens rather
+  // than on the poll that runs all day.
+  async function refreshRepos() {
+    try {
+      const r = await fetch('/api/terminal/repos');
+      const j = await r.json();
+      if (!j.ok) return;
+      if (j.hosts) wtRepos = j.hosts;
+      if (j.can_clone) wtCanClone = j.can_clone;
+    } catch (e) {}
+  }
+  function wtHostOf(g) { return (g && g.host) === 'vps' ? 'vps' : 'local'; }
+  function wtMaxFor(h) { return wtHostInfo(h).max_sessions || 6; }
+
+  // Deliberately does not ask for dirty: that costs a `git status` per worktree
+  // and this runs on a poll. Whether a checkout has uncommitted work is asked
+  // server-side at the one moment it matters, which is removal.
+  async function refreshWorktrees() {
+    let j;
+    try {
+      const r = await fetch('/api/terminal/worktrees');
+      j = await r.json();
+    } catch { return; }
+    if (!j || !j.ok) return;
+    worktrees = j.worktrees || [];
+    if (j.hosts) wtHosts = j.hosts;
+    if (j.vps) wtVps = j.vps;
+    const map = new Map();
+    for (const g of worktrees) for (const sid of (g.sessions || [])) map.set(sid, g.id);
+    wtSids = map;
+    const sig = worktrees.map(g => g.id + ':' + (g.sessions || []).join(',')).join('|');
+    if (sig !== wtSig) { wtSig = sig; renderSessions(); }
+  }
+
+  // Two sessions created in the same second carry the same tmux timestamp -
+  // session_created has second granularity - so the listing order within a group
+  // is whatever tmux felt like, and a group made as 1, 2, 3 can come out 2, 1, 3.
+  // The number in the name breaks that tie. A row you dragged still wins, because
+  // the user's own order is asked first.
+  function wtRowOrder(a, b) {
+    const dragged = byUserOrder(a, b);
+    if (dragged) return dragged;
+    const n = s => { const m = /\s(\d+)$/.exec(s.name || ''); return m ? Number(m[1]) : 0; };
+    return n(a) - n(b) || String(a.name || '').localeCompare(String(b.name || ''));
+  }
+
+  function wtHeader(g, count) {
+    const collapsed = wtCollapsed.has(g.id);
+    const h = document.createElement('div');
+    h.className = 'sess-section sec-wt';
+    // The id, on the element. Two machines can hold a worktree of the same name
+    // with the same branch, so name and branch do not identify a header - and
+    // anything reaching for one by eye, a test included, would pick the wrong.
+    h.dataset.wt = g.id;
+
+    const caret = document.createElement('span');
+    caret.className = 'sec-caret';
+    caret.innerHTML = collapsed ? '&#9654;' : '&#9660;';
+
+    const l = document.createElement('span');
+    l.className = 'sec-host';
+    l.textContent = g.name;
+
+    const br = document.createElement('span');
+    br.className = 'sec-branch';
+    br.textContent = g.missing ? 'checkout gone' : g.branch;
+
+    const c = document.createElement('span');
+    c.className = 'sec-count';
+    c.textContent = count;
+
+    h.appendChild(caret); h.appendChild(l); h.appendChild(c);
+
+    const add = document.createElement('button');
+    add.className = 'sec-add';
+    add.textContent = '+';
+    add.title = 'Another session in this worktree';
+    add.disabled = !!g.missing || count >= wtMaxFor(wtHostOf(g));
+    add.addEventListener('click', ev => { ev.stopPropagation(); wtAdd(g.id); });
+    h.appendChild(add);
+
+    const rm = document.createElement('button');
+    rm.className = 'sec-rm';
+    rm.innerHTML = '&times;';
+    rm.title = 'Remove this worktree and close its sessions';
+    rm.addEventListener('click', ev => { ev.stopPropagation(); wtRemove(g.id); });
+    h.appendChild(rm);
+
+    // Last, so it wraps onto its own line and the buttons stay on the first.
+    h.appendChild(br);
+
+    h.title = g.missing
+      ? g.branch + ' - the checkout is gone, but its sessions are still open'
+      : g.branch + '\n' + g.path;
+    h.addEventListener('click', () => {
+      if (collapsed) wtCollapsed.delete(g.id); else wtCollapsed.add(g.id);
+      savePref('wtCollapsed', [...wtCollapsed]);
+      renderSessions();
+    });
+    return h;
+  }
+
+  async function wtAdd(id) {
+    const g = worktrees.find(w => w.id === id);
+    try {
+      const r = await fetch('/api/terminal/worktree/add-session', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, host: wtHostOf(g) })
+      });
+      const j = await r.json();
+      if (!j.ok) { toast(j.error || 'Could not add a session'); return; }
+      await refreshWorktrees();
+      await refreshSessions();
+      if (j.session) switchTo(j.session.id);
+    } catch { toast('Could not add a session'); }
+  }
+
+  // The server refuses a worktree with uncommitted work WITHOUT closing
+  // anything, so the first refusal costs nothing: the shells are still open and
+  // the changes are still there. Only the second confirm passes force.
+  function wtRemove(id) {
+    const g = worktrees.find(w => w.id === id);
+    if (!g) return;
+    const n = (g.sessions || []).length;
+    askConfirm(
+      'Remove "' + g.name + '"?',
+      'This closes its ' + n + ' session' + (n === 1 ? '' : 's')
+        + ' and deletes the checkout.\n\nThe branch ' + g.branch
+        + ' is kept, so anything you committed stays.',
+      'Remove worktree', () => wtRemoveDo(id, false));
+  }
+
+  async function wtRemoveDo(id, force) {
+    const g = worktrees.find(w => w.id === id);
+    const label = g ? g.name : id;
+    try {
+      const r = await fetch('/api/terminal/worktree/remove', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, host: wtHostOf(g), force: !!force })
+      });
+      const j = await r.json();
+      if (!j.ok && j.dirty && !force) {
+        askConfirm('Uncommitted changes',
+          '"' + label + '" has changes that were never committed. Removing it now '
+            + 'throws them away for good.',
+          'Throw them away', () => wtRemoveDo(id, true));
+        return;
+      }
+      if (!j.ok) { toast(j.error || 'Could not remove the worktree'); return; }
+      await refreshWorktrees();
+      await refreshSessions();
+      toast('Removed "' + label + '"' + (j.branch ? ' - branch ' + j.branch + ' kept' : ''));
+    } catch { toast('Could not remove the worktree'); }
+  }
+
+  const wtBackdrop = document.getElementById('wtBackdrop');
+  const wtNameEl   = document.getElementById('wtName');
+  const wtBaseEl   = document.getElementById('wtBase');
+  const wtCountEl  = document.getElementById('wtCount');
+  const wtAutoEl   = document.getElementById('wtAuto');
+  const wtGoEl     = document.getElementById('wtGo');
+  const wtWarnEl   = document.getElementById('wtWarn');
+  const wtFolderEl = document.getElementById('wtFolder');
+  const wtHostLocalEl = document.getElementById('wtHostLocal');
+  const wtHostVpsEl   = document.getElementById('wtHostVps');
+  const wtRepoSelEl   = document.getElementById('wtRepoSel');
+  const wtRepoLabelEl = document.querySelector('.wt-labelrow label');
+  const wtCloneLinkEl = document.getElementById('wtCloneLink');
+  const wtBaseMainEl  = document.getElementById('wtBaseMain');
+  const wtBaseCurEl   = document.getElementById('wtBaseCur');
+  const ghBackdrop = document.getElementById('ghBackdrop');
+  const ghListEl   = document.getElementById('ghList');
+  const ghFilterEl = document.getElementById('ghFilter');
+  const ghDestEl   = document.getElementById('ghDest');
+  const ghGoEl     = document.getElementById('ghGo');
+  const ghWarnEl   = document.getElementById('ghWarn');
+
+  // Everything about the form that depends on WHICH machine you are creating
+  // on: the branch it will cut from, the folder it will cut from, and whether
+  // that folder is a repo at all. Re-run on every host switch, because none of
+  // those three carry over from the other machine.
+  // Everything about the form that depends on WHICH machine you are creating
+  // on. None of it carries over from the other machine, so it is all rebuilt.
+  function wtApplyHost() {
+    wtHostLocalEl.classList.toggle('on', wtHost === 'local');
+    wtHostVpsEl.classList.toggle('on', wtHost === 'vps');
+    wtCountEl.max = String(wtMaxFor(wtHost));
+    if (Number(wtCountEl.value) > wtMaxFor(wtHost)) wtCountEl.value = String(wtMaxFor(wtHost));
+
+    const list = wtRepoList(wtHost);
+    const chosen = wtSelectedRepo(wtHost);
+    wtRepoSelEl.innerHTML = '';
+    for (const r of list) {
+      const o = document.createElement('option');
+      o.value = r.path;
+      // Name alone is a guess, so the branch rides along in the option itself.
+      o.textContent = r.name + (r.branch ? '  ·  ' + r.branch : '')
+        + (r.worktrees ? '  +' + r.worktrees : '');
+      if (r.path === chosen) o.selected = true;
+      wtRepoSelEl.appendChild(o);
+    }
+    if (!list.length) {
+      const o = document.createElement('option');
+      o.value = '';
+      o.textContent = wtRepoInfo(wtHost).online === false
+        ? 'that machine did not answer' : 'no repositories found';
+      wtRepoSelEl.appendChild(o);
+    }
+    // Cloning reaches this Mac's git credentials, so it is offered for the Mac
+    // only - and the label says which machine the list belongs to, because that
+    // was the whole confusion.
+    wtRepoLabelEl.textContent = wtHost === 'vps'
+      ? 'Repository on ' + (wtVps.host || 'the box')
+      : 'Repository on this Mac';
+    wtCloneLinkEl.style.display = wtCanClone[wtHost] ? '' : 'none';
+    wtApplyRepo();
+  }
+
+  // Everything that depends on WHICH repo: the folder it cuts from and the
+  // branch it starts on.
+  function wtApplyRepo() {
+    const path = wtRepoSelEl.value;
+    const entry = wtRepoEntry(wtHost, path);
+    if (entry) {
+      wtRepoPick[wtHost] = path;
+      savePref('wtRepo', wtRepoPick);
+    }
+    // Under the picker: where it is, what it is called on GitHub, and when it
+    // last moved. Enough to know which repo you are looking at without opening it.
+    if (entry) {
+      const bits = [(wtHost === 'vps' ? (wtVps.host || 'box') + ':' : '') + entry.path];
+      if (entry.slug) bits.push(entry.slug);
+      const last = entry.last || {};
+      if (last.when) bits.push('last commit ' + last.when);
+      wtFolderEl.textContent = bits.join('  ·  ');
+      wtFolderEl.title = last.subject ? last.subject : '';
+    } else {
+      wtFolderEl.textContent = '';
+      wtFolderEl.title = '';
+    }
+    // The repo's home branch, not the branch its checkout happens to be sitting
+    // on. Starting a new feature off someone's half-finished one is a mistake
+    // you only notice much later.
+    const home = entry ? (entry.default_branch || 'main') : 'main';
+    const cur = entry ? (entry.branch || 'HEAD') : 'HEAD';
+    wtBaseMainEl.textContent = home;
+    wtBaseCurEl.textContent = cur === home ? 'current' : cur;
+    wtBaseCurEl.disabled = cur === home;
+    wtBaseEl.value = home;
+    wtSyncBaseButtons();
+
+    const none = !entry;
+    wtWarnEl.style.display = none ? '' : 'none';
+    wtWarnEl.textContent = none
+      ? (wtRepoInfo(wtHost).online === false
+         ? 'That machine did not answer, so there is nothing to branch from.'
+         : 'No git repository found on that machine to branch from.')
+      : '';
+    wtGoEl.disabled = none;
+  }
+
+  async function openWtModal() {
+    wtNameEl.value = '';
+    wtCountEl.value = '2';
+    // On by default: a worktree is made to be worked in, and every one of them so
+    // far has ended with someone typing `claude` in each shell by hand.
+    wtAutoEl.checked = loadPref('wtAuto', true) !== false;
+
+    // The VPS option is only real when a box is connected, reachable, and new
+    // enough to know what a worktree is. Otherwise it says which of those it is
+    // rather than offering a button that fails.
+    const v = wtHostInfo('vps');
+    const vpsUsable = !!v.online;
+    wtHostVpsEl.disabled = !vpsUsable;
+    wtHostVpsEl.textContent = wtVps.enabled ? 'VPS' : 'VPS (none)';
+    wtHostVpsEl.title = !wtVps.enabled ? 'No VPS connected - set one up in settings'
+      : v.unsupported ? 'That box is reachable but does not have worktree groups yet'
+      : !vpsUsable ? 'The VPS is offline'
+      : 'Create it on ' + (wtVps.host || 'the box');
+    // A remembered VPS choice must not survive the box going away, or the form
+    // would open pointed at a machine it cannot reach.
+    if (wtHost === 'vps' && !vpsUsable) wtHost = 'local';
+
+    wtApplyHost();
+    wtBackdrop.classList.add('open');
+    setTimeout(() => wtNameEl.focus(), 30);
+
+    // Then go and look again. Finding the repos means walking folders and asking
+    // git a few questions per checkout, which is a second or so - long enough
+    // that waiting for it before drawing anything would read as a stuck button.
+    // Redrawn only if the answer actually differs, so a base branch you typed
+    // over is not wiped a second after you typed it.
+    const before = JSON.stringify(wtRepos);
+    await refreshRepos();
+    if (wtBackdrop.classList.contains('open') && JSON.stringify(wtRepos) !== before) {
+      wtApplyHost();
+    }
+  }
+  function closeWtModal() { wtBackdrop.classList.remove('open'); }
+
+  async function submitWt() {
+    if (wtGoEl.disabled) return;
+    const name = (wtNameEl.value || '').trim();
+    if (!name) { wtNameEl.focus(); return; }
+    const body = {
+      name: name,
+      host: wtHost,
+      repo: wtRepoSelEl.value,
+      base: (wtBaseEl.value || '').trim() || 'HEAD',
+      count: Number(wtCountEl.value) || 1,
+      autostart: wtAutoEl.checked,
+    };
+    const was = wtGoEl.textContent;
+    wtGoEl.disabled = true;
+    wtGoEl.textContent = 'Creating...';
+    try {
+      const r = await fetch('/api/terminal/worktree/create', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const j = await r.json();
+      if (!j.ok) {
+        toast(j.error || 'Could not create the worktree');
+        // A failure on this side is not proof of a failure on the other: a
+        // create that timed out in transit may well have landed. Re-read the
+        // list so an orphan shows up in the sidebar instead of hiding on a
+        // machine you are not looking at.
+        refreshWorktrees();
+        return;
+      }
+      closeWtModal();
+      await refreshWorktrees();
+      await refreshSessions();
+      const first = (j.sessions || [])[0];
+      if (first) switchTo(first.id);
+      const where = body.host === 'vps' ? ' on ' + (wtVps.host || 'the box') : '';
+      toast((j.errors || []).length
+        ? 'Worktree ' + j.worktree.branch + where + ' - ' + j.errors.length + ' session(s) failed to start'
+        : 'Worktree ' + j.worktree.branch + where + ' with ' + (j.sessions || []).length + ' sessions');
+    } catch { toast('Could not create the worktree'); }
+    finally { wtGoEl.disabled = false; wtGoEl.textContent = was; }
+  }
+
+  btnWt.addEventListener('click', openWtModal);
+  // ── clone from GitHub ─────────────────────────────────────────────────────
+  let ghRepos = [], ghPicked = '';
+
+  function ghRender() {
+    const q = (ghFilterEl.value || '').trim().toLowerCase();
+    const rows = ghRepos.filter(r => !q || r.full_name.toLowerCase().indexOf(q) !== -1);
+    ghListEl.innerHTML = '';
+    if (!rows.length) {
+      const e = document.createElement('div');
+      e.className = 'gh-empty';
+      e.textContent = ghRepos.length ? 'Nothing matches that.' : 'No repositories.';
+      ghListEl.appendChild(e);
+      return;
+    }
+    for (const r of rows.slice(0, 60)) {
+      const el = document.createElement('div');
+      el.className = 'gh-item' + (r.full_name === ghPicked ? ' on' : '');
+      el.dataset.gh = r.full_name;
+      const n = document.createElement('span');
+      n.className = 'gh-name';
+      n.textContent = r.full_name;
+      el.appendChild(n);
+      if (r.private) {
+        const t = document.createElement('span');
+        t.className = 'gh-tag'; t.textContent = 'private';
+        el.appendChild(t);
+      }
+      const b = document.createElement('span');
+      b.className = 'gh-tag'; b.textContent = r.default_branch || '';
+      el.appendChild(b);
+      el.addEventListener('click', () => {
+        ghPicked = r.full_name;
+        // The folder is named after the repo unless you say otherwise, which is
+        // what anyone would have typed anyway.
+        const base = (ghDestEl.value || '').replace(/\/+$/, '');
+        const parent = base.indexOf('/') === -1 ? base : base.slice(0, base.lastIndexOf('/'));
+        ghDestEl.value = parent + '/' + r.full_name.split('/')[1];
+        ghSyncGo();
+        ghRender();
+      });
+      ghListEl.appendChild(el);
+    }
+  }
+
+  // Dead until a row is picked. The old version let you press Clone with
+  // nothing selected, and the only sign was a line of small red text - which
+  // reads, entirely fairly, as "nothing happened".
+  function ghSyncGo() {
+    ghGoEl.disabled = !ghPicked;
+    ghGoEl.textContent = ghPicked ? 'Clone ' + ghPicked.split('/')[1] : 'Pick one above';
+  }
+
+  async function ghOpen() {
+    ghPicked = ''; ghRepos = [];
+    ghSyncGo();
+    ghFilterEl.value = '';
+    ghWarnEl.style.display = 'none';
+    ghListEl.innerHTML = '<div class="gh-empty">Loading...</div>';
+    // Default next to the folder the app is set to, so a clone lands beside
+    // everything else rather than somewhere you have to go looking for.
+    const here = (wtRepoInfo('local').default || '').replace(/\/+$/, '');
+    ghDestEl.value = (here.indexOf('/') === -1 ? here : here.slice(0, here.lastIndexOf('/'))) + '/';
+    ghBackdrop.classList.add('open');
+    setTimeout(() => ghFilterEl.focus(), 30);
+    try {
+      const r = await fetch('/api/terminal/github/repos');
+      const j = await r.json();
+      if (!j.ok) {
+        ghListEl.innerHTML = '';
+        ghWarnEl.style.display = '';
+        ghWarnEl.textContent = j.error || 'Could not reach GitHub.';
+        return;
+      }
+      ghRepos = j.repos || [];
+      ghRender();
+    } catch (e) {
+      ghListEl.innerHTML = '';
+      ghWarnEl.style.display = '';
+      ghWarnEl.textContent = 'Could not reach GitHub.';
+    }
+  }
+
+  function ghClose() { ghBackdrop.classList.remove('open'); }
+
+  async function ghClone() {
+    if (!ghPicked) return;              // the button is disabled; belt and braces
+    const dest = (ghDestEl.value || '').replace(/\/+$/, '');
+    const parent = dest.slice(0, dest.lastIndexOf('/'));
+    const leaf = dest.slice(dest.lastIndexOf('/') + 1);
+    ghGoEl.disabled = true; ghGoEl.textContent = 'Cloning...';
+    ghWarnEl.style.display = 'none';
+    try {
+      const r = await fetch('/api/terminal/github/clone', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo: ghPicked, dest: parent, name: leaf })
+      });
+      const j = await r.json();
+      if (!j.ok) {
+        ghWarnEl.style.display = '';
+        ghWarnEl.textContent = j.error || 'Could not clone that.';
+        return;
+      }
+      await refreshRepos();
+      wtRepoPick.local = j.repo.path;      // land on what you just fetched
+      savePref('wtRepo', wtRepoPick);
+      ghBackdrop.classList.remove('open');
+      wtHost = 'local'; savePref('wtHost', 'local');
+      wtApplyHost();
+      toast('Cloned ' + ghPicked + ' into ' + j.repo.path);
+    } catch (e) {
+      ghWarnEl.style.display = '';
+      ghWarnEl.textContent = 'Could not clone that.';
+    } finally { ghSyncGo(); }
+  }
+
+  ghGoEl.addEventListener('click', ghClone);
+  document.getElementById('ghCancel').addEventListener('click', ghClose);
+  ghBackdrop.addEventListener('click', ev => { if (ev.target === ghBackdrop) ghClose(); });
+  ghFilterEl.addEventListener('input', ghRender);
+  document.addEventListener('keydown', ev => {
+    if (!ghBackdrop.classList.contains('open')) return;
+    if (ev.key === 'Escape') { ev.preventDefault(); ghClose(); }
+  });
+
+  wtAutoEl.addEventListener('change', () => savePref('wtAuto', wtAutoEl.checked));
+  wtRepoSelEl.addEventListener('change', wtApplyRepo);
+
+  // The two buttons light up only when the field still says what they say - type
+  // anything else and neither claims to be what you are about to do.
+  function wtSyncBaseButtons() {
+    const v = (wtBaseEl.value || '').trim();
+    wtBaseMainEl.classList.toggle('on', v === wtBaseMainEl.textContent);
+    wtBaseCurEl.classList.toggle('on', !wtBaseCurEl.disabled && v === wtBaseCurEl.textContent);
+  }
+  wtBaseMainEl.addEventListener('click', () => { wtBaseEl.value = wtBaseMainEl.textContent; wtSyncBaseButtons(); });
+  wtBaseCurEl.addEventListener('click', () => {
+    if (!wtBaseCurEl.disabled) { wtBaseEl.value = wtBaseCurEl.textContent; wtSyncBaseButtons(); }
+  });
+  wtBaseEl.addEventListener('input', wtSyncBaseButtons);
+  wtCloneLinkEl.addEventListener('click', ghOpen);
+
+  function wtPickHost(h) { wtHost = h; savePref('wtHost', h); wtApplyHost(); }
+  wtHostLocalEl.addEventListener('click', () => wtPickHost('local'));
+  wtHostVpsEl.addEventListener('click', () => {
+    if (!wtHostVpsEl.disabled) wtPickHost('vps');
+  });
+  wtGoEl.addEventListener('click', submitWt);
+  document.getElementById('wtCancel').addEventListener('click', closeWtModal);
+  wtBackdrop.addEventListener('click', ev => { if (ev.target === wtBackdrop) closeWtModal(); });
+  document.addEventListener('keydown', ev => {
+    if (!wtBackdrop.classList.contains('open')) return;
+    if (ev.key === 'Escape') { ev.preventDefault(); closeWtModal(); }
+    else if (ev.key === 'Enter') { ev.preventDefault(); submitWt(); }
+  });
+
+  // Draw one machine's worktrees, each as a folder with its sessions nested.
+  // `pool` is that machine's session list, so a group can only ever adopt rows
+  // from the machine it lives on.
+  function renderWtGroups(host, pool) {
+    for (const g of worktrees) {
+      if (wtHostOf(g) !== host) continue;
+      const rows = pool.filter(s => wtSids.get(s.id) === g.id).sort(wtRowOrder);
+      sessListEl.appendChild(wtHeader(g, rows.length));
+      if (wtCollapsed.has(g.id)) continue;
+      if (!rows.length) {
+        const e = document.createElement('div');
+        e.className = 'wt-empty';
+        e.textContent = g.missing ? 'checkout gone' : 'no sessions open';
+        sessListEl.appendChild(e);
+      }
+      for (const s of rows) {
+        const row = buildRow(s);
+        row.classList.add('in-wt');
+        sessListEl.appendChild(row);
+      }
+    }
+  }
+
   function renderSessions() {
     if (renaming) return;   // never tear down the list mid-edit (would drop focus)
     sessListEl.innerHTML = '';
@@ -1925,7 +2651,15 @@
     const showSections  = vpsInfo.enabled || sessions.some(s => s.host === 'vps');
 
     if (showSections) sessListEl.appendChild(sectionHeader('This Mac'));
-    for (const s of localSessions) sessListEl.appendChild(buildRow(s));
+    for (const s of localSessions) {
+      if (wtSids.has(s.id)) continue;   // drawn under its worktree, below
+      sessListEl.appendChild(buildRow(s));
+    }
+    // A worktree belongs to the machine it was cut on, so it is drawn inside
+    // that machine's section - under this Mac's loose sessions here, and under
+    // the box's further down. Each group is its own checkout on its own branch,
+    // so it gets a folder rather than a place in the flat list.
+    renderWtGroups('local', localSessions);
 
     if (showSections) {
       let note = '';
@@ -1938,7 +2672,11 @@
         addDisabled: !vpsInfo.online,
         addTitle: 'New VPS session',
       }));
-      for (const s of vpsSessions) sessListEl.appendChild(buildRow(s));
+      for (const s of vpsSessions) {
+        if (wtSids.has(s.id)) continue;   // drawn under its worktree, below
+        sessListEl.appendChild(buildRow(s));
+      }
+      renderWtGroups('vps', vpsSessions);
     }
 
     sessListEl.appendChild(savedHeader(saved.length));
@@ -3037,6 +3775,7 @@
     appStarted = true;
     startPoll(refreshStates, 3000);
     startPoll(refreshSessions, 8000);
+    startPoll(refreshWorktrees, 20000);
   }
 
   (async function init() {
