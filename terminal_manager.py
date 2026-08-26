@@ -10,6 +10,11 @@ The session registry is tmux itself (`tmux list-sessions`), so it survives a
 restart of this process. Display names are stored as a tmux user option
 (@webname) on each session for the same reason.
 
+Worktree grouping rides the same mechanism: a session opened inside a worktree
+carries @webworktree (the worktree id) and @webwtname (its display name), so
+`tmux list-sessions` alone says which shells belong together. There is no second
+datastore that could disagree with the shells that actually exist.
+
 Persistence rests on the tmux server being owned by cron rather than by this
 process: ensure-web-terminals.sh (@reboot + every minute) holds a _keepalive
 session open, so the server sits in cron.service's cgroup where a
@@ -48,6 +53,8 @@ import termios
 import threading
 import time
 import uuid
+
+import terminal_worktree
 
 
 # ── tmux backend ──
@@ -166,7 +173,7 @@ def _list_sessions_raw():
     answered=False means tmux did not give us a usable answer, so the caller must
     not conclude anything - least of all that every session is gone.
     """
-    fmt = "#{session_name}\t#{session_created}\t#{window_width}\t#{window_height}\t#{@webname}\t#{@webplan}\t#{@webloop}\t#{pane_current_command}\t#{pane_pid}\t#{@webstate}\t#{@webfile}\t#{session_activity}"
+    fmt = "#{session_name}\t#{session_created}\t#{window_width}\t#{window_height}\t#{@webname}\t#{@webplan}\t#{@webloop}\t#{pane_current_command}\t#{pane_pid}\t#{@webstate}\t#{@webfile}\t#{session_activity}\t#{@webworktree}\t#{@webwtname}"
     r = _tmux("list-sessions", "-F", fmt)
     if r.returncode != 0:
         # A dead server genuinely means zero sessions; anything else is unknown.
@@ -196,11 +203,14 @@ def _list_sessions_raw():
         # is what lets the status poll skip re-reading panes that cannot have
         # changed - see _pane_signals.
         activity = parts[11] if len(parts) > 11 else ""
+        worktree = parts[12] if len(parts) > 12 else ""
+        wtname = parts[13] if len(parts) > 13 else ""
         out.append({
             "id": sid, "name": name, "alive": True,
             "cols": cols, "rows": rows, "created_at": created, "plan": plan,
             "loop": loop, "cmd": cmd, "pid": pid, "webstate": webstate,
             "webfile": webfile, "activity": activity,
+            "worktree": worktree, "worktree_name": wtname,
         })
     out.sort(key=lambda s: s["created_at"])
     with _last_good_lock:
@@ -762,12 +772,106 @@ def session_diff(sid):
     return {"ok": True, "cwd": cwd, "repo": top, "text": text}
 
 
-def start_session(name=None, cwd=None):
+_TRUST_MARKERS = ("do you trust the files in this folder",
+                  "yes, i trust this folder")
+# What a Claude that is up and waiting for you looks like. The input caret is the
+# signal: the footer text varies with version and settings - one session says
+# "auto mode on", another only "for agents" - but the caret is what "ready" means
+# on screen, and it is the same in every version.
+_READY_CARET = "❯"
+_READY_MARKERS = ("auto mode on", "for shortcuts", "bypass permissions")
+
+
+def _looks_ready(text):
+    if any(line.strip().startswith(_READY_CARET) for line in text.splitlines()):
+        return True
+    low = text.lower()
+    return any(m in low for m in _READY_MARKERS)
+
+
+def worktree_brief(path, branch, repo, base, count):
+    """The one thing a fresh Claude in a worktree cannot work out for itself.
+
+    It already knows the repo and the branch - it starts in the folder and reads
+    the repo's CLAUDE.md. What it cannot see is that this checkout is disposable,
+    which tree it must NOT wander into, that other terminals are editing the same
+    files, and where the work is supposed to end up.
+
+    One line, because a newline would submit it half-written.
+    """
+    others = ("%d terminals share this folder, so check git status before "
+              "editing widely. " % count) if count > 1 else ""
+    return (
+        "Context before we start: you are in a git worktree at %s, on branch %s, "
+        "cut from %s of the repo at %s. This checkout is disposable - the main "
+        "checkout at %s is untouched, so do not switch branches here and do not "
+        "edit anything outside this folder. %s"
+        "When the work is done the route is: commit here, push this branch, open "
+        "a PR - and ask me before you push or deploy anything. "
+        "Reply with a single short line that you are ready, then wait."
+        % (path, branch, base or "its base", repo, repo, others))
+
+
+def _prime_claude(sid, brief=None, window=90.0):
+    """Get Claude past its opening prompt and, optionally, hand it the brief.
+
+    Two things happen on a first launch in a brand new directory. Claude asks
+    whether you trust the folder - always, because a worktree is a folder it has
+    never seen - and until that is answered, "autostart" has delivered a session
+    that is not actually started. Then it needs a moment before it can take input.
+
+    Deliberately narrow on both counts: the trust prompt is answered only when
+    THAT prompt is on screen, and the brief is typed only once Claude looks
+    ready. Nothing is blind-fired into a terminal that might be showing something
+    else entirely. If neither state ever appears, nothing is sent.
+    """
+    def watch():
+        deadline = time.time() + window
+        trusted = False
+        while time.time() < deadline:
+            time.sleep(0.7)
+            r = _tmux("capture-pane", "-p", "-t", _sname(sid))
+            if r.returncode != 0:
+                if _tmux_says_gone(r):
+                    return
+                continue
+            low = (r.stdout or "").lower()
+            if not trusted and any(m in low for m in _TRUST_MARKERS):
+                _tmux("send-keys", "-t", _sname(sid), "Enter")
+                trusted = True
+                continue
+            if not brief:
+                if trusted:
+                    return          # nothing else to do
+                continue
+            if _looks_ready(r.stdout or "") and not any(m in low for m in _TRUST_MARKERS):
+                # Let it finish painting before typing into it - the caret shows
+                # up a moment before the input is actually listening.
+                time.sleep(1.5)
+                # -l sends the text literally, so a word like "Enter" inside the
+                # brief stays a word instead of becoming a keypress.
+                _tmux("send-keys", "-t", _sname(sid), "-l", brief)
+                time.sleep(0.4)
+                _tmux("send-keys", "-t", _sname(sid), "Enter")
+                return
+    threading.Thread(target=watch, daemon=True, name="wt-prime-%s" % sid[:6]).start()
+
+
+def start_session(name=None, cwd=None, worktree=None, worktree_name=None,
+                  autostart=False, brief=None):
     """Create a new tmux-backed session.
 
     `cwd` opens it somewhere other than the configured working folder - used by
     a handover, which has to land in the folder that matches the machine the
-    work came from, not wherever new sessions normally start.
+    work came from, not wherever new sessions normally start, and by a worktree
+    group, whose shells all open inside its checkout.
+
+    `worktree`/`worktree_name` stamp @webworktree/@webwtname, which is the whole
+    of the grouping mechanism: list_sessions() reads them straight back out.
+
+    `autostart` types `claude` into the fresh shell. Off by default - a new
+    terminal should be a terminal, and starting an agent is a decision rather
+    than a side effect of opening a window.
     """
     if not _tmux_available():
         return {"ok": False, "error": "tmux not installed"}
@@ -808,10 +912,18 @@ def start_session(name=None, cwd=None):
     _tmux("set-option", "-t", _sname(sid), "history-limit", TMUX_HISTORY)
     _tmux("set-option", "-t", _sname(sid), "destroy-unattached", "off")
     _tmux("set-option", "-t", _sname(sid), "@webname", name)
+    if worktree:
+        _tmux("set-option", "-t", _sname(sid), "@webworktree", worktree)
+        _tmux("set-option", "-t", _sname(sid), "@webwtname", worktree_name or worktree)
+
+    if autostart:
+        _tmux("send-keys", "-t", _sname(sid), "claude", "Enter")
+        _prime_claude(sid, brief)
 
     return {"ok": True, "session": {
         "id": sid, "name": name, "alive": True,
         "cols": cols, "rows": rows, "created_at": time.time(),
+        "worktree": worktree or "", "worktree_name": worktree_name or "",
     }}
 
 
@@ -876,6 +988,267 @@ def rename_session(sid, name):
         if s["id"] == sid:
             return {"ok": True, "session": s}
     return {"ok": True, "session": {"id": sid, "name": name, "alive": True}}
+
+
+# ── Worktree groups ──
+# One git worktree, several shells whose cwd is inside it, drawn as a folder in
+# the sidebar. terminal_worktree owns the git half; this owns the tmux half and
+# the join between them, which is nothing more than the @webworktree stamp.
+#
+# START_DIR is read at CALL time, never captured: the folder the app is set to
+# is changeable from the settings panel, and a worktree cut from the folder you
+# used to have open would be a bad surprise.
+
+def _sessions_in_worktree(wt_id):
+    return [s for s in _tmux_sessions() if s.get("worktree") == wt_id]
+
+
+def _group_display_name(wt_id, sessions=None):
+    """The human name for a group, recovered from its own sessions.
+
+    git knows an id and a branch, not a name, so the name lives on the sessions
+    as @webwtname. Any one of them can answer.
+    """
+    for s in (sessions if sessions is not None else _sessions_in_worktree(wt_id)):
+        if s.get("worktree_name"):
+            return s["worktree_name"]
+    return wt_id
+
+
+def _next_group_index(sessions, display):
+    """Number the next shell after the highest already in the group.
+
+    Closing "Fix 2" of three and adding one back should give you "Fix 4", not a
+    second "Fix 3" sitting next to the first.
+    """
+    highest = 0
+    for s in sessions:
+        m = re.match(r"^" + re.escape(display) + r" (\d+)$", s.get("name") or "")
+        if m:
+            highest = max(highest, int(m.group(1)))
+    return max(highest, len(sessions)) + 1
+
+
+def list_repos():
+    """Repos this machine can cut a worktree from, plus which one is the default.
+
+    The folder the app is set to is always in the list even if it sits outside
+    the folders that get scanned, because that is the one you would reach for
+    first and its absence would read as a bug.
+    """
+    try:
+        repos = terminal_worktree.discover_repos(always=[START_DIR])
+    except (terminal_worktree.WorktreeError, subprocess.TimeoutExpired, OSError) as e:
+        return {"ok": False, "error": str(e), "repos": [], "default": ""}
+    default = ""
+    real_start = os.path.realpath(START_DIR)
+    for r in repos:
+        if os.path.realpath(r["path"]) == real_start:
+            default = r["path"]
+    if not default and terminal_worktree.is_git_repo(START_DIR):
+        # Set to a repo the scan did not reach. Offer it anyway - it is the one
+        # every session already opens in.
+        repos.insert(0, {"path": START_DIR,
+                         "name": os.path.basename(START_DIR.rstrip(os.sep)),
+                         "slug": terminal_worktree.remote_slug(START_DIR),
+                         "branch": terminal_worktree.current_branch(START_DIR),
+                         "worktrees": 0})
+        default = START_DIR
+    return {"ok": True, "repos": repos, "default": default or (repos[0]["path"] if repos else "")}
+
+
+def clone_repo(full_name, dest_parent=None, name=None):
+    """Clone a GitHub repo so it can be worktreed. Returns the new checkout."""
+    parent = dest_parent or os.path.dirname(START_DIR.rstrip(os.sep)) or os.path.expanduser("~")
+    try:
+        path = terminal_worktree.clone(full_name, parent, name)
+    except terminal_worktree.WorktreeError as e:
+        return {"ok": False, "error": str(e)}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "git clone timed out"}
+    return {"ok": True, "repo": {
+        "path": path, "name": os.path.basename(path.rstrip(os.sep)),
+        "slug": terminal_worktree.remote_slug(path),
+        "branch": terminal_worktree.current_branch(path), "worktrees": 0}}
+
+
+def github_repos():
+    try:
+        return {"ok": True, "repos": terminal_worktree.github_repos()}
+    except terminal_worktree.WorktreeError as e:
+        return {"ok": False, "error": str(e), "repos": []}
+
+
+def create_worktree_group(name, base=None, count=1, autostart=False, repo=None):
+    """One worktree plus `count` shells already inside it.
+
+    A create that produces no shells at all disposes of the worktree again
+    rather than leaving an empty directory behind: at that point nothing has
+    happened in it, so there is nothing to preserve.
+    """
+    try:
+        count = int(count)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "count must be a number"}
+    if count < 1 or count > terminal_worktree.MAX_SESSIONS:
+        return {"ok": False, "error": "count must be between 1 and %d"
+                                      % terminal_worktree.MAX_SESSIONS}
+    if not _tmux_available():
+        return {"ok": False, "error": "tmux not installed"}
+
+    # An explicit repo wins; otherwise the folder the app is set to. Checked
+    # against the pick list rather than taken on trust, so an id from a stale
+    # page cannot aim a checkout at an arbitrary path on this machine.
+    repo = os.path.expanduser(repo) if repo else START_DIR
+    if os.path.realpath(repo) != os.path.realpath(START_DIR):
+        known = {os.path.realpath(r["path"]) for r in list_repos().get("repos", [])}
+        if os.path.realpath(repo) not in known:
+            return {"ok": False, "error": "unknown repo: %s" % repo}
+    try:
+        info = terminal_worktree.create(
+            name, base or terminal_worktree.current_branch(repo) or "HEAD", repo)
+    except terminal_worktree.WorktreeError as e:
+        return {"ok": False, "error": str(e)}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "git worktree add timed out"}
+
+    brief = worktree_brief(info["path"], info["branch"], repo, info["base"], count) \
+        if autostart else None
+
+    sessions, errors = [], []
+    for i in range(1, count + 1):
+        r = start_session(name="%s %d" % (info["name"], i), cwd=info["path"],
+                          worktree=info["id"], worktree_name=info["name"],
+                          autostart=autostart, brief=brief)
+        if r.get("ok"):
+            sessions.append(r["session"])
+        else:
+            errors.append(r.get("error") or "session failed to start")
+
+    if not sessions:
+        try:
+            terminal_worktree.dispose(info["id"], repo, force=True)
+        except Exception:
+            pass
+        return {"ok": False, "error": "; ".join(errors) or "no sessions started"}
+
+    return {"ok": True, "worktree": {
+        "id": info["id"], "name": info["name"], "branch": info["branch"],
+        "path": info["path"], "base": info["base"], "seeded": info["seeded"],
+        "repo": repo, "repo_name": os.path.basename(repo.rstrip(os.sep)),
+    }, "sessions": sessions, "errors": errors}
+
+
+def add_session_to_worktree(wt_id, name=None, autostart=False):
+    """One more shell in an existing worktree."""
+    if not terminal_worktree.exists(wt_id):
+        return {"ok": False, "error": "worktree not found"}
+    existing = _sessions_in_worktree(wt_id)
+    if len(existing) >= terminal_worktree.MAX_SESSIONS:
+        return {"ok": False, "error": "a worktree holds at most %d sessions"
+                                      % terminal_worktree.MAX_SESSIONS}
+    display = _group_display_name(wt_id, existing)
+    label = name or "%s %d" % (display, _next_group_index(existing, display))
+    path = terminal_worktree.worktree_path(wt_id)
+    owner = terminal_worktree.owner_repo(wt_id) or START_DIR
+    brief = worktree_brief(path, terminal_worktree.branch_name(wt_id), owner,
+                           terminal_worktree.default_branch(owner),
+                           len(existing) + 1) if autostart else None
+    return start_session(name=label, cwd=path,
+                         worktree=wt_id, worktree_name=display,
+                         autostart=autostart, brief=brief)
+
+
+def remove_worktree_group(wt_id, force=False, keep_branch=True):
+    """Close every shell in a worktree, then remove the checkout.
+
+    The dirty check runs BEFORE anything is killed, so a refusal costs you
+    nothing: the shells are still open and the changes are still there.
+    """
+    try:
+        terminal_worktree.validate_id(wt_id)
+    except terminal_worktree.WorktreeError as e:
+        return {"ok": False, "error": str(e)}
+
+    sessions = _sessions_in_worktree(wt_id)
+
+    if not force and terminal_worktree.exists(wt_id):
+        try:
+            if terminal_worktree.is_dirty(wt_id):
+                return {"ok": False, "dirty": True, "error":
+                        "This worktree has uncommitted changes. Removing it "
+                        "throws them away."}
+        except (terminal_worktree.WorktreeError, subprocess.TimeoutExpired) as e:
+            return {"ok": False, "error": str(e)}
+
+    for s in sessions:
+        stop_session(s["id"])
+
+    try:
+        # No repo passed: the checkout names its own owner, which is the only
+        # answer that stays right when several repos are in play.
+        terminal_worktree.dispose(wt_id, keep_branch=keep_branch, force=True)
+    except terminal_worktree.WorktreeError as e:
+        return {"ok": False, "error": str(e), "closed": len(sessions)}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "git worktree remove timed out",
+                "closed": len(sessions)}
+
+    return {"ok": True, "closed": len(sessions),
+            "branch": terminal_worktree.branch_name(wt_id) if keep_branch else ""}
+
+
+def list_worktree_groups(with_dirty=False):
+    """Every group the sidebar should draw, from git and tmux together.
+
+    with_dirty is off by default and the poll leaves it off: `git status` on a
+    large checkout, several times a minute, for an answer nothing is looking at,
+    is how you make a laptop warm. The removal guard asks at the one moment it
+    matters.
+
+    A group whose directory has been removed by hand still appears, flagged
+    `missing`, because its sessions are still open and still need somewhere to
+    live in the list.
+    """
+    repo = START_DIR
+    try:
+        # Every repo's worktrees, not just the folder the app is set to: a group
+        # you made from another repo must not vanish from the list the moment it
+        # is not the current one.
+        trees = terminal_worktree.list_worktrees(with_dirty=with_dirty)
+    except (terminal_worktree.WorktreeError, subprocess.TimeoutExpired, OSError):
+        trees = []
+
+    by_id = {}
+    for s in _tmux_sessions():
+        if s.get("worktree"):
+            by_id.setdefault(s["worktree"], []).append(s)
+
+    groups, seen = [], set()
+    for t in trees:
+        members = by_id.get(t["id"], [])
+        seen.add(t["id"])
+        g = dict(t)
+        g["name"] = _group_display_name(t["id"], members)
+        g["sessions"] = [m["id"] for m in members]
+        g["missing"] = False
+        groups.append(g)
+
+    for wt_id, members in by_id.items():
+        if wt_id in seen:
+            continue
+        groups.append({
+            "id": wt_id, "name": _group_display_name(wt_id, members),
+            "branch": terminal_worktree.BRANCH_PREFIX + wt_id, "path": "",
+            "sessions": [m["id"] for m in members], "missing": True,
+        })
+
+    groups.sort(key=lambda g: g["name"].lower())
+    return {"ok": True, "worktrees": groups,
+            "current_branch": terminal_worktree.current_branch(repo),
+            "is_repo": terminal_worktree.is_git_repo(repo),
+            "folder": repo,
+            "max_sessions": terminal_worktree.MAX_SESSIONS}
 
 
 def write_session(sid, data):

@@ -27,9 +27,19 @@ cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 echo "==> Bundling Python engine into Contents/Resources"
 cp ../server.py "$APP/Contents/Resources/server.py"
 cp ../terminal_manager.py "$APP/Contents/Resources/terminal_manager.py"
+cp ../terminal_worktree.py "$APP/Contents/Resources/terminal_worktree.py"
 cp ../setup.py "$APP/Contents/Resources/setup.py"
 rm -rf "$APP/Contents/Resources/static"
 cp -R ../static "$APP/Contents/Resources/static"
+
+# 2a. The bundled engine must be able to import itself. A module added to the
+#     project but forgotten in the copy list above is otherwise a crash on first
+#     launch, and every step between here and there would have looked fine.
+echo "==> Verifying the bundled engine imports"
+if ! ( cd "$APP/Contents/Resources" && python3 -c "import terminal_worktree, terminal_manager, setup" ); then
+    echo "!! the bundled engine does not import - a module is missing from the copy list above" >&2
+    exit 1
+fi
 
 # 2b. Nothing personal travels with the app. mts-config.json holds the working
 #     folder and, when one is connected, a VPS token - per-user state that lives
