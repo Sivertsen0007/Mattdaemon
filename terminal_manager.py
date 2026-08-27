@@ -235,6 +235,7 @@ class TerminalView:
         self.id = sid
         self.process = None
         self.master_fd = None
+        self.client_tty = ""     # how tmux knows this client; see _open_view
         self.fd_lock = threading.RLock()   # guards master_fd against the close/read race
         self.scrollback = bytearray()
         self.scrollback_lock = threading.Lock()
@@ -306,6 +307,12 @@ def _open_view(sid, cols=80, rows=24):
 
     master_fd, slave_fd = pty.openpty()
     fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+    # tmux identifies a client by the tty it attached on, and this is the only
+    # moment that name is available - the slave is closed a few lines down.
+    try:
+        client_tty = os.ttyname(slave_fd)
+    except OSError:
+        client_tty = ""
 
     env = os.environ.copy()
     env["TERM"] = "xterm-256color"
@@ -322,6 +329,7 @@ def _open_view(sid, cols=80, rows=24):
 
     view.process = proc
     view.master_fd = master_fd
+    view.client_tty = client_tty
 
     t = threading.Thread(target=_reader_loop, args=(view,), daemon=True)
     t.start()
@@ -455,6 +463,19 @@ def _pane_tail(low):
     return "\n".join(low.splitlines()[-_PROMPT_TAIL_LINES:])
 
 
+# A pick-one box: the selector caret sitting on a numbered option. Every dialog
+# that stops and waits for you draws this same shape - a tool permission, a plan
+# waiting for its go-ahead, a multiple-choice question - and they word themselves
+# differently enough that matching their prose one phrase at a time has always
+# missed some. A plan approval says "Would you like to proceed?", which nothing
+# here was looking for, so a session sat green while it waited on you.
+#
+# The caret alone would not do: it also draws the input line you type into. With
+# a number after it, it is a list, and a list in the live region is one nobody
+# has answered.
+_CHOICE_RE = re.compile(r"^\s*\u276f\s*\d+[.)]\s+\S", re.M)
+
+
 def _build_proc_tree():
     """One ps snapshot -> {ppid: [(pid, comm), ...]} for the whole box.
 
@@ -562,7 +583,9 @@ def _pane_signals(sid, activity):
     signals = (
         "esc to interrupt" in tail,
         ("do you want to" in tail
-         or "❯ 1. yes" in tail
+         or "would you like to proceed" in tail            # a plan awaiting your go-ahead
+         or "no, and tell claude what to do differently" in tail  # every permission box
+         or bool(_CHOICE_RE.search(tail))
          or "y/n" in tail or "(y/n)" in tail or "[y/n]" in tail
          or "press enter to continue" in tail),
     )
@@ -1198,6 +1221,54 @@ def remove_worktree_group(wt_id, force=False, keep_branch=True):
             "branch": terminal_worktree.branch_name(wt_id) if keep_branch else ""}
 
 
+def worktree_status(wt_id):
+    """What a group holds that you would lose. On demand only - see the module."""
+    try:
+        terminal_worktree.validate_id(wt_id)
+        return dict(terminal_worktree.status(wt_id), ok=True)
+    except terminal_worktree.WorktreeError as e:
+        return {"ok": False, "error": str(e)}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "git took too long"}
+
+
+def finish_worktree(wt_id, message=None, open_pr=True):
+    """Commit, push, open a PR. Reaches off this machine, so only when asked."""
+    try:
+        terminal_worktree.validate_id(wt_id)
+        return dict(terminal_worktree.finish(wt_id, message, open_pr), ok=True)
+    except terminal_worktree.WorktreeError as e:
+        return {"ok": False, "error": str(e)}
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "git took too long"}
+
+
+def stale_worktree_branches():
+    """Empty wt/* branches, per repo, left behind by removed worktrees."""
+    repos = list_repos().get("repos", [])
+    out = []
+    for r in repos:
+        try:
+            rows = terminal_worktree.stale_branches(r["path"])
+        except (terminal_worktree.WorktreeError, subprocess.TimeoutExpired, OSError):
+            continue
+        if rows:
+            out.append({"repo": r["path"], "name": r["name"],
+                        "branches": [b["name"] for b in rows]})
+    return {"ok": True, "repos": out,
+            "total": sum(len(r["branches"]) for r in out)}
+
+
+def delete_worktree_branches(repo, names):
+    known = {r["path"] for r in list_repos().get("repos", [])}
+    if repo not in known:
+        return {"ok": False, "error": "unknown repo"}
+    try:
+        return dict(terminal_worktree.delete_branches(repo, names), ok=True)
+    except (terminal_worktree.WorktreeError, subprocess.TimeoutExpired) as e:
+        return {"ok": False, "error": str(e)}
+
+
 def list_worktree_groups(with_dirty=False):
     """Every group the sidebar should draw, from git and tmux together.
 
@@ -1350,7 +1421,6 @@ def iter_session_events(sid):
 
     ping_interval = 15
     last_ping = 0
-    replayed = False
 
     while True:
         view = _get_view(sid)
@@ -1359,27 +1429,39 @@ def iter_session_events(sid):
             yield {"type": "exit", "code": 0}
             return
 
-        # Replay scrollback once, on first attach. On a re-attach tmux redraws
-        # the live screen for us, so replaying stale bytes would only double it.
-        #
-        # NOTE (2026-07-20): an earlier attempt SKIPPED this replay for alt-screen
-        # sessions (Claude/vim) and relied on the refresh-client below to repaint.
-        # That regressed badly: for an already-attached/in-sync view, refresh-client
-        # only sends INCREMENTAL updates, not a full redraw, so the browser's fresh
-        # xterm started blank and filled in extremely slowly. The replay is what
-        # gives the instant full-screen paint - keep it unconditionally.
-        if not replayed:
-            replayed = True
-            with view.scrollback_lock:
-                if view.scrollback:
-                    encoded = base64.b64encode(bytes(view.scrollback)).decode("ascii")
-                    yield {"type": "replay", "data": encoded}
-
         q = view.subscribe()
         try:
+            # The screen, handed over AFTER subscribing, on EVERY attach.
+            #
+            # A fresh tmux client paints the whole screen the moment it attaches,
+            # and _open_view starts its reader before this generator has a queue
+            # to receive anything. Those bytes therefore reached the scrollback
+            # and nobody else. Replaying BEFORE subscribing could not close that
+            # gap either: whatever arrived between the snapshot and the subscribe
+            # was broadcast to no one and then never replayed, so a re-attach
+            # could leave a browser holding whatever the dying client last drew -
+            # most visibly tmux's own "[terminated]" - with nothing arriving to
+            # overwrite it. Reading the scrollback out AFTER subscribing covers
+            # the whole timeline with no seam, because _reader_loop appends and
+            # broadcasts under one lock: anything not in this snapshot is already
+            # in the queue, and nothing is in both.
+            #
+            # Sent on every attach and even when empty. The outer loop re-attaches
+            # under a live session, and that new client's screen is exactly what
+            # the browser has not got; an empty one tells it to clear a pane whose
+            # contents are now a lie.
+            with view.scrollback_lock:
+                snapshot = bytes(view.scrollback)
+            yield {"type": "replay",
+                   "data": base64.b64encode(snapshot).decode("ascii")}
+
             # Nudge tmux into redrawing so a fresh client sees the current screen
-            # rather than waiting for the next keystroke.
-            _tmux("refresh-client", "-t", _sname(sid))
+            # rather than waiting for the next keystroke. Targeted at the client's
+            # tty, which is how tmux names a client: this used to pass the session
+            # name, which refresh-client answers with "can't find client", so the
+            # nudge had never once fired.
+            if view.client_tty:
+                _tmux("refresh-client", "-t", view.client_tty)
 
             while True:
                 try:
@@ -1495,12 +1577,15 @@ def _reader_loop(view):
             if not data:
                 break
 
+            # Both under the one lock, so a subscriber taking a snapshot of the
+            # scrollback can never straddle a chunk: whatever it does not hold is
+            # queued for it instead, and nothing is delivered twice.
             with view.scrollback_lock:
                 view.scrollback.extend(data)
                 if len(view.scrollback) > SCROLLBACK_MAX:
                     _trim_scrollback(view.scrollback, SCROLLBACK_MAX)
-
-            view.broadcast({"type": "output", "data": base64.b64encode(data).decode("ascii")})
+                view.broadcast({"type": "output",
+                                "data": base64.b64encode(data).decode("ascii")})
     finally:
         # Mark dead before announcing, so anyone who checks .alive on the way
         # past agrees with the message.
