@@ -70,7 +70,12 @@ MAX_SESSIONS = 6
 
 # Where to look for repos to offer in the picker. The folder the app is set to is
 # always included on top of these, wherever it lives.
-DEFAULT_ROOTS = ["~/Documents", "~/code", "~/dev", "~/src", "~/Projects", "~/repos", "~/git"]
+# MTS_REPO_ROOTS confines the scan - a colon-separated list. It exists so a test
+# rig cannot reach the real checkouts on this machine: a sweep that offers to
+# delete branches must only ever be offered the repos it was pointed at.
+DEFAULT_ROOTS = ([p for p in os.environ.get("MTS_REPO_ROOTS", "").split(":") if p]
+                 or ["~/Documents", "~/code", "~/dev", "~/src", "~/Projects",
+                     "~/repos", "~/git"])
 DISCOVER_DEPTH = 3
 _SKIP_DIRS = {"node_modules", ".venv", "venv", "vendor", "Library", "build", "dist",
               ".next", "target", "Pods", ".Trash"}
@@ -593,6 +598,183 @@ def list_worktrees(repo=None, with_dirty=False):
             item["dirty"] = is_dirty(wt_id)
         out.append(item)
     return out
+
+
+def status(wt_id, base=None):
+    """What a worktree holds that you would lose. {dirty, ahead, base, branch}
+
+    Asked on demand, never on a poll: `git status` on a large checkout is cheap
+    once and expensive forty times a minute, and this is a number you look at
+    when you are deciding something, not one you watch all day.
+    """
+    out = {"id": wt_id, "dirty": 0, "ahead": 0, "base": base or "",
+           "branch": branch_name(wt_id), "ok": False}
+    path = worktree_path(wt_id)
+    if not os.path.isdir(path):
+        return out
+    repo = owner_repo(wt_id)
+    out["base"] = base or (default_branch(repo) if repo else "")
+    r = _git("status", "--porcelain", cwd=path, timeout=60)
+    if r.returncode == 0:
+        out["dirty"] = len([l for l in (r.stdout or "").splitlines() if l.strip()])
+    if out["base"]:
+        # Commits this branch has that the base does not. Counted against the
+        # LOCAL base, so it still answers when the box is offline.
+        c = _git("rev-list", "--count", "%s..HEAD" % out["base"], cwd=path, timeout=60)
+        if c.returncode == 0:
+            try:
+                out["ahead"] = int((c.stdout or "0").strip())
+            except ValueError:
+                pass
+    out["ok"] = True
+    return out
+
+
+def github_pr(slug, head, base, title, body=""):
+    """Open a pull request. Returns its url, or the url of the one already open.
+
+    A second PR for the same branch is not an error worth stopping on - GitHub
+    answers 422, and the useful reply is a link to the one that exists.
+    """
+    tok = github_token()
+    if not tok:
+        raise WorktreeError("No GitHub token on this machine, so the branch was "
+                            "pushed but no PR was opened.")
+    if not GH_REPO_RE.match(slug or ""):
+        raise WorktreeError("cannot tell which GitHub repo %r is" % (slug,))
+    payload = json.dumps({"title": title, "head": head, "base": base,
+                          "body": body}).encode()
+    req = urllib.request.Request(
+        "%s/repos/%s/pulls" % (GITHUB_API, slug), data=payload, method="POST",
+        headers={"Authorization": "Bearer " + tok,
+                 "Accept": "application/vnd.github+json",
+                 "Content-Type": "application/json",
+                 "User-Agent": "mattdaemon-worktrees"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode("utf-8", "replace")).get("html_url", "")
+    except urllib.error.HTTPError as e:
+        body_text = ""
+        try:
+            body_text = e.read().decode("utf-8", "replace")
+        except Exception:
+            pass
+        if e.code == 422:
+            existing = _find_open_pr(slug, head, tok)
+            if existing:
+                return existing
+            raise WorktreeError("GitHub refused the pull request: %s"
+                                % (json.loads(body_text or "{}").get("message", "422")))
+        raise WorktreeError("GitHub said %s when opening the pull request." % e.code)
+    except Exception as e:
+        raise WorktreeError("Could not reach GitHub: %s" % e)
+
+
+def _find_open_pr(slug, head, tok):
+    owner = slug.split("/")[0]
+    url = "%s/repos/%s/pulls?state=open&head=%s:%s" % (GITHUB_API, slug, owner, head)
+    req = urllib.request.Request(url, headers={
+        "Authorization": "Bearer " + tok, "Accept": "application/vnd.github+json",
+        "User-Agent": "mattdaemon-worktrees"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            rows = json.loads(r.read().decode("utf-8", "replace"))
+        return rows[0].get("html_url", "") if rows else ""
+    except Exception:
+        return ""
+
+
+def finish(wt_id, message=None, open_pr=True):
+    """Commit what is here, push the branch, open a pull request.
+
+    The last manual step of the round trip, and the only one that reaches off
+    this machine - so it is never taken without being asked for. Each stage
+    reports separately: a push that worked and a PR that did not is a useful
+    answer, not a failure.
+    """
+    path = worktree_path(wt_id)
+    if not os.path.isdir(path):
+        raise WorktreeError("that worktree is gone")
+    repo = owner_repo(wt_id)
+    if not repo:
+        raise WorktreeError("cannot tell which repo this worktree belongs to")
+    branch = branch_name(wt_id)
+    st = status(wt_id)
+    result = {"committed": 0, "pushed": False, "pr": "", "branch": branch,
+              "warning": ""}
+
+    if st["dirty"]:
+        _git("add", "-A", cwd=path, timeout=120)
+        msg = (message or "").strip() or "wip: %s" % wt_id
+        c = _git("commit", "-m", msg, cwd=path, timeout=120)
+        if c.returncode != 0:
+            raise WorktreeError("commit failed: %s" % (c.stderr or c.stdout).strip())
+        result["committed"] = st["dirty"]
+
+    p = _git("push", "-u", "origin", branch, cwd=path, timeout=600)
+    if p.returncode != 0:
+        raise WorktreeError("push failed: %s" % (p.stderr or p.stdout).strip())
+    result["pushed"] = True
+
+    if not open_pr:
+        return result
+    slug = remote_slug(path)
+    base = st["base"] or default_branch(repo)
+    try:
+        result["pr"] = github_pr(slug, branch, base,
+                                 title=wt_id.replace("-", " "),
+                                 body="Opened from a worktree group.")
+    except WorktreeError as e:
+        # The branch is up; that is the part that mattered.
+        result["warning"] = str(e)
+    return result
+
+
+def stale_branches(repo):
+    """wt/* branches that hold nothing you would miss.
+
+    Nothing unique in them compared with the repo's home branch, and no live
+    worktree using them. Anything with its own commits is left alone - the whole
+    reason removal keeps branches is that commits are the part worth keeping.
+    """
+    if not is_git_repo(repo):
+        return []
+    home = default_branch(repo)
+    live = {branch_name(w["id"]) for w in list_worktrees(repo)}
+    r = _git("for-each-ref", "--format=%(refname:short)", "refs/heads/" + BRANCH_PREFIX,
+             cwd=repo, timeout=30)
+    if r.returncode != 0:
+        return []
+    out = []
+    for name in (r.stdout or "").split():
+        if not name.startswith(BRANCH_PREFIX) or name in live:
+            continue
+        c = _git("rev-list", "--count", "%s..%s" % (home, name), cwd=repo, timeout=30)
+        try:
+            ahead = int((c.stdout or "0").strip())
+        except ValueError:
+            continue
+        if ahead == 0:
+            out.append({"name": name, "ahead": 0})
+    return out
+
+
+def delete_branches(repo, names):
+    """Delete named wt/* branches. Refuses anything that is not provably stale.
+
+    The caller hands back a list it was given, so the list is recomputed here
+    rather than trusted: a branch that grew a commit between the two calls must
+    not be deleted because a page still thinks it is empty.
+    """
+    safe = {b["name"] for b in stale_branches(repo)}
+    deleted, refused = [], []
+    for name in names or []:
+        if name in safe and name.startswith(BRANCH_PREFIX):
+            r = _git("branch", "-D", name, cwd=repo, timeout=30)
+            (deleted if r.returncode == 0 else refused).append(name)
+        else:
+            refused.append(name)
+    return {"deleted": deleted, "refused": refused}
 
 
 def exists(wt_id):

@@ -212,10 +212,10 @@ def _vps_post_full(path, body, timeout=None):
         return 0, {"ok": False, "error": "vps unreachable: %s" % e}
 
 
-def _vps_start(name=None):
+def _vps_start(name=None, autostart=False):
     """Start a session on the box and namespace the id it returns, so the
     frontend switches straight to the new vps: pane."""
-    res = _vps_post("/api/terminal/start", {"name": name})
+    res = _vps_post("/api/terminal/start", {"name": name, "autostart": autostart})
     if res and res.get("ok") and res.get("session"):
         sess = res["session"]
         sess["realid"] = sess.get("id", "")
@@ -244,6 +244,13 @@ def _vps_open_stream(real_id):
         return None
 
 
+# How long a vps: pane keeps trying to reach the box before it gives up and says
+# so. Three quarters of the box's own stream read timeout is not the unit here:
+# what matters is surviving a restart (seconds) and a short network sulk without
+# surviving a box that is simply gone.
+_RELAY_PATIENCE = 90.0
+
+
 def _session_event_source(sid):
     """One session's events as dicts, wherever the shell actually lives.
 
@@ -262,28 +269,55 @@ def _session_event_source(sid):
     if not _vps_enabled():
         yield {"type": "error", "error": "vps not configured"}
         return
-    upstream = _vps_open_stream(real)
-    if upstream is None:
-        yield {"type": "error", "error": "vps stream unreachable"}
-        return
-    try:
-        for raw in upstream:  # HTTPResponse yields one SSE line at a time
-            line = raw.decode("utf-8", "replace").strip()
-            if not line.startswith("data: "):
-                continue
+
+    # The relay reconnects itself, the way the local path re-attaches a dead
+    # view. Anything that ends the box's stream - it restarts (several times a
+    # day, since that is how it is deployed), the Mac sleeps, the network blips -
+    # used to end this generator, and with it the pane. In a wall of four that is
+    # invisible: the other three keep the merged response open, and the browser
+    # only ever reconnects when the whole response ends, so the dead pane sat
+    # there showing the last thing it drew - most often tmux's own "[terminated]"
+    # from the client the box killed on its way down. Reconnecting instead gets
+    # the pane a fresh attach, and the box replays the screen on every attach, so
+    # it repaints rather than resuming mid-sentence.
+    #
+    # The patience is measured from the last event that actually arrived, not
+    # from the start: a box that is answering keeps its pane for as long as it
+    # keeps answering, and one that has genuinely gone releases it.
+    deadline = time.time() + _RELAY_PATIENCE
+    delay = 0.5
+    while True:
+        upstream = _vps_open_stream(real)
+        if upstream is not None:
+            delay = 0.5
             try:
-                event = json.loads(line[6:])
-            except ValueError:
-                continue
-            if event.get("type") != "session":
-                yield event
-    except Exception:
-        pass  # a dead relay is a dropped pane, not a dead app
-    finally:
-        try:
-            upstream.close()
-        except Exception:
-            pass
+                for raw in upstream:  # HTTPResponse yields one SSE line at a time
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line.startswith("data: "):
+                        continue
+                    try:
+                        event = json.loads(line[6:])
+                    except ValueError:
+                        continue
+                    kind = event.get("type")
+                    if kind == "session":
+                        continue
+                    yield event
+                    if kind == "exit":
+                        return   # the shell is gone; there is nothing to re-open
+                    deadline = time.time() + _RELAY_PATIENCE
+            except Exception:
+                pass  # a dead relay is a dropped connection, not a dead app
+            finally:
+                try:
+                    upstream.close()
+                except Exception:
+                    pass
+        if time.time() >= deadline:
+            yield {"type": "error", "error": "vps stream lost"}
+            return
+        time.sleep(delay)
+        delay = min(delay * 2, 5.0)
 
 
 # ── The box's sessions, kept off the request path ──────────────────────────
@@ -331,6 +365,43 @@ def _vps_poll_once():
             "states": pre(states.get("states")), "plans": pre(states.get("plans")),
             "files": pre(states.get("files")),
         })
+
+
+def _vps_snap_add(rows):
+    """Put sessions the box has just created into the snapshot at once.
+
+    Every listing this app serves for the box is read out of the poller's
+    snapshot, which is up to _VPS_REFRESH seconds old. So a session created
+    through here was invisible for as much as three seconds AFTER the call that
+    made it had already returned its id: no row in the sidebar, a pane titled
+    with a raw sid, and a click that had in fact worked reading as a click that
+    hung. The answer to the create is the fresher fact, so it goes straight in
+    rather than waiting to be discovered.
+    """
+    fresh = [dict(r) for r in (rows or []) if r.get("id")]
+    if not fresh:
+        return
+    with _vps_snap_lock:
+        have = {s.get("id") for s in _vps_snap["sessions"]}
+        _vps_snap["sessions"] = _vps_snap["sessions"] + [
+            r for r in fresh if r.get("id") not in have]
+        # `ts` is deliberately not touched: this is one row we happen to know,
+        # not a poll, and moving it would tell a box that has gone quiet that it
+        # is still answering.
+
+
+def _vps_snap_drop(sids):
+    """Take sessions the box has just closed out of the snapshot at once.
+
+    The same blind window as _vps_snap_add, in reverse: a shell you closed
+    stayed in the list, with a live-looking dot, until the next poll.
+    """
+    gone = {s for s in (sids or []) if s}
+    if not gone:
+        return
+    with _vps_snap_lock:
+        _vps_snap["sessions"] = [s for s in _vps_snap["sessions"]
+                                 if s.get("id") not in gone]
 
 
 def _start_vps_poller():
@@ -1324,6 +1395,22 @@ class TerminalHandler(BaseHTTPRequestHandler):
             want_dirty = (qs.get("dirty", [""])[0] or "") == "1"
             self._json(200, _merged_worktrees(with_dirty=want_dirty))
             return
+        if path == "/api/terminal/worktree/status":
+            qs = parse_qs(urlparse(self.path).query)
+            wid = (qs.get("id", [""])[0] or "").strip()
+            if wid.startswith(SID_VPS_PREFIX):
+                if not _vps_enabled():
+                    self._json(404, {"ok": False, "error": "vps not configured"})
+                    return
+                self._json(200, _vps_get("/api/terminal/worktree/status?id=%s"
+                                         % _split_sid(wid)[1]) or
+                           {"ok": False, "error": "vps unreachable"})
+                return
+            self._json(200, terminal_manager.worktree_status(wid))
+            return
+        if path == "/api/terminal/worktree/stale":
+            self._json(200, terminal_manager.stale_worktree_branches())
+            return
         if path == "/api/terminal/repos":
             self._json(200, _merged_repos())
             return
@@ -1552,7 +1639,15 @@ class TerminalHandler(BaseHTTPRequestHandler):
                 except queue.Empty:
                     continue
                 if event is None:
+                    # Say so. While any other pane is still live the response
+                    # stays open, so a browser has no way to notice that one of
+                    # its panes has gone quiet for good: it keeps a healthy
+                    # connection and a frozen screen. Told, it can re-open the
+                    # stream and get that pane a fresh attach.
                     live.discard(sid)
+                    self.wfile.write(
+                        f"data: {json.dumps({'type': 'source-ended', 'sid': sid})}\n\n".encode())
+                    self.wfile.flush()
                     continue
                 self.wfile.write(
                     f"data: {json.dumps(dict(event, sid=sid))}\n\n".encode())
@@ -1645,10 +1740,19 @@ class TerminalHandler(BaseHTTPRequestHandler):
         if path == "/api/terminal/start":
             if self._blocked_by_setup():
                 return
+            # autostart is whatever the caller asked for, and callers who say
+            # nothing get a plain shell. The button in the UI asks for claude;
+            # the selftests and the handover want a shell they can type into,
+            # and a default of ON silently broke both.
+            auto = bool(data.get("autostart"))
             if data.get("host") == "vps":
-                self._json(200, _vps_start(data.get("name")))
+                res = _vps_start(data.get("name"), auto)
+                if res.get("ok") and res.get("session"):
+                    _vps_snap_add([res["session"]])
+                self._json(200, res)
                 return
-            self._json(200, terminal_manager.start_session(data.get("name")))
+            self._json(200, terminal_manager.start_session(
+                data.get("name"), autostart=auto))
             return
 
         if path == "/api/terminal/github/clone":
@@ -1666,6 +1770,27 @@ class TerminalHandler(BaseHTTPRequestHandler):
         # rather than a session id. A create says which machine outright; add
         # and remove carry a namespaced group id, so the prefix answers for them
         # even if the client forgot to say.
+        if path == "/api/terminal/worktree/finish":
+            wid = str(data.get("id") or "")
+            if wid.startswith(SID_VPS_PREFIX) or data.get("host") == "vps":
+                if not _vps_enabled():
+                    self._json(404, {"ok": False, "error": "vps not configured"})
+                    return
+                body = dict(data); body.pop("host", None)
+                body["id"] = _split_sid(wid)[1]
+                code, res = _vps_post_full(path, body, timeout=900)
+                self._json(code or 502, res)
+                return
+            result = terminal_manager.finish_worktree(
+                wid, data.get("message"), bool(data.get("pr", True)))
+            self._json(200 if result.get("ok") else 400, result)
+            return
+        if path == "/api/terminal/worktree/prune-branches":
+            result = terminal_manager.delete_worktree_branches(
+                data.get("repo", ""), data.get("branches") or [])
+            self._json(200 if result.get("ok") else 400, result)
+            return
+
         if path in ("/api/terminal/worktree/create",
                     "/api/terminal/worktree/add-session",
                     "/api/terminal/worktree/remove"):
@@ -1705,6 +1830,12 @@ class TerminalHandler(BaseHTTPRequestHandler):
                         res["session"]["realid"] = res["session"].get("id", "")
                         res["session"]["id"] = SID_VPS_PREFIX + res["session"].get("id", "")
                         res["session"]["host"] = "vps"
+                    # The box holds these shells NOW. Without this the frontend
+                    # opens a pane on a session its own listing will not admit
+                    # exists for another poll or two, which is most of what
+                    # "adding a session to a worktree is slow" was.
+                    _vps_snap_add(res.get("sessions") or
+                                  ([res["session"]] if res.get("session") else []))
                 self._json(code if code else 502, res)
                 return
 
@@ -1762,7 +1893,10 @@ class TerminalHandler(BaseHTTPRequestHandler):
             body.pop("host", None)
             # uploads carry up to 5MB of base64 - give the hop more time.
             tmo = 30 if path == "/api/terminal/upload" else None
-            self._json(200, _vps_post(path, body, timeout=tmo))
+            res = _vps_post(path, body, timeout=tmo)
+            if path == "/api/terminal/stop" and res.get("ok"):
+                _vps_snap_drop([data.get("sid", "")])
+            self._json(200, res)
             return
 
         if path == "/api/terminal/input":

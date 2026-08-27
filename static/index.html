@@ -1886,6 +1886,14 @@
     document.getElementById('mcClose').addEventListener('click', close);
     document.getElementById('mcPop').addEventListener('click', () => window.open(MC_URL, '_blank'));
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && ov.classList.contains('open')) close(); });
+    // Mission Control (in the iframe) asks the host to run a session here.
+    // MC stays local; the terminal runs via Mattdaemon (VPS by default).
+    window.addEventListener('message', ev => {
+      const d = ev.data || {};
+      if (!d || d.source !== 'mission-control') return;
+      if (d.type === 'open-terminal') { close(); try { newSession(d.host || 'vps', false); } catch (e) {} }
+      else if (d.type === 'close') { close(); }
+    });
   })();
 
   // ── sidebar ──────────────────────────────────────────────────────────────
