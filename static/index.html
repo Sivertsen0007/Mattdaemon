@@ -64,6 +64,10 @@
   .modal-backdrop{position:fixed;inset:0;z-index:100;background:rgba(0,0,0,.55);
     display:none;align-items:center;justify-content:center}
   .modal-backdrop.open{display:flex}
+  /* The confirm is always the last word, so it sits above every other sheet.
+     At equal z-index the one later in the document won, which put it BEHIND the
+     worktree form and left its buttons unclickable. */
+  #confirmBackdrop{z-index:140}
   .modal{background:#161617;border:1px solid var(--border);border-radius:12px;padding:20px 20px 16px;
     width:340px;max-width:90vw;box-shadow:0 24px 70px rgba(0,0,0,.6);font-family:'JetBrains Mono',monospace}
   .modal-title{font-size:14px;font-weight:600;color:var(--ink);margin-bottom:9px}
@@ -123,6 +127,12 @@
     text-transform:none;letter-spacing:0;font-weight:500;font-size:10px;
     color:var(--inkDim);font-family:'JetBrains Mono',monospace;overflow:hidden;
     text-overflow:ellipsis;white-space:nowrap}
+  /* the branch line, while you are pointing at the group */
+  .sess-section .sec-branch-live{color:var(--inkMute);display:flex;align-items:center;gap:8px}
+  .sess-section .sec-finish{flex:none;background:none;border:none;padding:0;cursor:pointer;
+    font-family:inherit;font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+    font-weight:600;color:var(--accent,#c8a24b)}
+  .sess-section .sec-finish:hover{color:var(--ink)}
   .sess-section .sec-rm{flex:none;width:18px;height:18px;line-height:16px;text-align:center;
     border:1px solid var(--border);border-radius:4px;color:var(--inkMute);cursor:pointer;
     background:transparent;font-family:inherit;font-size:12px;padding:0}
@@ -175,6 +185,11 @@
   .wt-base:hover:not(:disabled){border-color:#3a3a3f;color:var(--ink)}
   .wt-base.on{background:#1e1e21;border-color:#45454b;color:var(--ink)}
   .wt-base:disabled{opacity:.35;cursor:default}
+  /* leftovers from removed worktrees - present only when there are some */
+  .wt-stale{font-size:11px;color:var(--inkDim);margin:-6px 0 14px;line-height:1.5}
+  .wt-stale button{background:none;border:none;padding:0;cursor:pointer;font-family:inherit;
+    font-size:11px;color:var(--accent,#c8a24b);text-decoration:underline;text-underline-offset:2px}
+  .wt-stale button:hover{color:var(--ink)}
   .wt-hosts{display:flex;gap:6px}
   .wt-host{flex:1;padding:7px 10px;font-size:12px;border-radius:6px;cursor:pointer;
     background:transparent;border:1px solid var(--border);color:var(--inkMute);
@@ -374,6 +389,14 @@
     color:var(--inkMute);cursor:pointer;font-size:11px;font-family:inherit}
   .plan-btn:hover{border-color:#3a3a3f;color:var(--ink);background:#202023}
   .plan-frame{flex:1;width:100%;border:0;background:#fff}
+  .sb-mc{width:100%;justify-content:center;margin:2px 0 6px}
+  #mcOverlay{position:fixed;inset:0;z-index:1000;background:#0d0d0e;display:none;flex-direction:column}
+  #mcOverlay.open{display:flex}
+  .mc-head{height:38px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--border);background:#111}
+  .mc-title{font-weight:600;color:var(--ink);font-size:13px;margin-right:auto}
+  .mc-btn{background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--inkMute);width:28px;height:26px;cursor:pointer;font-size:12px}
+  .mc-btn:hover{color:var(--ink);background:#202023}
+  #mcFrame{flex:1;width:100%;border:0;background:#fff}
   .term-head{height:36px;flex:none;display:flex;align-items:center;gap:10px;padding:0 15px;
     border-bottom:1px solid var(--border);background:#0d0d0e}
   .term-head .chip{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 9px;
@@ -491,6 +514,7 @@
       <div class="sess-list" id="sessList"></div>
 
       <div class="sess-count" id="sessCount">0 sessions</div>
+      <button class="tb-btn sb-mc" id="btnMC" title="Mission Control - the agent dashboard">&#9678; Mission Control</button>
       <div class="side-foot">
         <button class="tb-btn sb-reconnect" id="btnReload">&#8635; Reconnect</button>
         <button class="tb-btn gear" id="btnSettings" title="Settings - folder, Claude account, VPS">&#9881;</button>
@@ -527,6 +551,15 @@
       </div>
       <iframe class="plan-frame" id="planFrame" title="Preview"></iframe>
     </aside>
+
+    <div id="mcOverlay">
+      <div class="mc-head">
+        <span class="mc-title">&#9678; Mission Control</span>
+        <button class="mc-btn" id="mcPop" title="Open in your browser">&#8599;</button>
+        <button class="mc-btn" id="mcClose" title="Back to terminals">&#10005;</button>
+      </div>
+      <iframe id="mcFrame" title="Mission Control" src="about:blank"></iframe>
+    </div>
   </div>
 </div>
 
@@ -592,6 +625,7 @@
       <input type="number" id="wtCount" min="1" max="6" value="2">
     </div>
     <label class="wt-check"><input type="checkbox" id="wtAuto"> Run claude in each session</label>
+    <div class="wt-stale" id="wtStale" style="display:none"></div>
     <div class="modal-actions">
       <button class="btn-cancel" id="wtCancel">Cancel</button>
       <button class="btn-go" id="wtGo">Create</button>
@@ -1126,6 +1160,10 @@
   // without a connection budget to think about.
   const stream = { abort: null, connected: false, epoch: 0, lastRx: 0,
                    retries: 0, retryTimer: null, sids: [] };
+  // Declared with the stream rather than with reopenSoon below, because the
+  // event handler above reads reopenTries and a `let` is not usable before the
+  // line that declares it.
+  let reopenTimer = null, reopenTries = 0;
 
   const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 
@@ -1222,6 +1260,7 @@
       // held anyway.
       if (evt.type === 'replay') pane.term.reset();
       pane.term.write(Uint8Array.from(atob(evt.data), c => c.charCodeAt(0)));
+      reopenTries = 0;    // bytes are flowing; a later stall starts fresh
       return;
     }
 
@@ -1239,6 +1278,17 @@
       return;
     }
 
+    if (evt.type === 'source-ended') {
+      // This pane's source stopped while the rest of the wall kept the response
+      // open, so nothing else would ever tell us: the connection stays healthy
+      // and the pane stays frozen on whatever it last drew. Re-opening the
+      // stream re-attaches every visible session, this one included, and the
+      // fresh attach repaints it. A session that really has exited says so with
+      // an exit event first, and an exited pane is left alone.
+      if (pane && !pane.exited && !pane.closing) reopenSoon();
+      return;
+    }
+
     if (evt.type === 'exit') {
       if (!pane) return;
       pane.term.write('\r\n\x1b[33m[Session ended]\x1b[0m\r\n');
@@ -1251,6 +1301,23 @@
 
     // attached / ping / detached / error: nothing to draw. The server re-attaches
     // the underlying view for us.
+  }
+
+  /// Re-open the stream shortly, once, however many panes ask for it.
+  ///
+  /// Several panes go quiet together when the box restarts, and one re-open
+  /// covers all of them - so the asks are coalesced rather than raced. The delay
+  /// grows while the cure is not working, because a box that is still down would
+  /// otherwise be asked twice a second for as long as it stayed down; it drops
+  /// back to prompt the moment any pane paints again.
+  function reopenSoon() {
+    if (reopenTimer) return;
+    reopenTries = Math.min(reopenTries + 1, 4);
+    const wait = Math.min(5000, 500 * Math.pow(2, reopenTries - 1));
+    reopenTimer = setTimeout(() => {
+      reopenTimer = null;
+      openStream(streamSids());
+    }, wait);
   }
 
   /// Queue another attempt, backing off so a server that is down (or still
@@ -1808,6 +1875,19 @@
     if (t) window.open(t.url, '_blank');
   });
 
+  // Mission Control (agent dashboard) - opens localhost:4820 in an overlay
+  (function(){
+    const MC_URL = 'http://localhost:4820';
+    const ov = document.getElementById('mcOverlay'), fr = document.getElementById('mcFrame');
+    if (!ov || !fr) return;
+    const open = () => { if (fr.getAttribute('src') !== MC_URL) fr.setAttribute('src', MC_URL); ov.classList.add('open'); };
+    const close = () => ov.classList.remove('open');
+    document.getElementById('btnMC').addEventListener('click', open);
+    document.getElementById('mcClose').addEventListener('click', close);
+    document.getElementById('mcPop').addEventListener('click', () => window.open(MC_URL, '_blank'));
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && ov.classList.contains('open')) close(); });
+  })();
+
   // ── sidebar ──────────────────────────────────────────────────────────────
   // Status classes/colours mirror the :3333 dashboard: green = done/waiting for
   // you, yellow = working or looping, red = needs you, grey = offline.
@@ -2028,7 +2108,7 @@
       b.textContent = '+';
       b.title = opts.addTitle || 'New session';
       b.disabled = !!opts.addDisabled;
-      b.addEventListener('click', ev => { ev.stopPropagation(); opts.onAdd(); });
+      b.addEventListener('click', ev => { ev.stopPropagation(); opts.onAdd(ev); });
       h.appendChild(b);
     }
     return h;
@@ -2103,6 +2183,7 @@
   let wtRepos = { local: { repos: [], default: '', online: true },
                   vps:   { repos: [], default: '', online: false } };
   let wtCanClone = { local: true, vps: false };
+  let wtReposLoaded = false;   // has a scan ever come back?
   let wtRepoPick = loadPref('wtRepo', {}) || {};
 
   function wtHostInfo(h) { return wtHosts[h] || wtHosts.local; }
@@ -2127,6 +2208,7 @@
       if (!j.ok) return;
       if (j.hosts) wtRepos = j.hosts;
       if (j.can_clone) wtCanClone = j.can_clone;
+      wtReposLoaded = true;
     } catch (e) {}
   }
   function wtHostOf(g) { return (g && g.host) === 'vps' ? 'vps' : 'local'; }
@@ -2164,6 +2246,98 @@
     return n(a) - n(b) || String(a.name || '').localeCompare(String(b.name || ''));
   }
 
+  // ── what a group is holding, asked only when you look at it ───────────────
+  // A `git status` per worktree on the poll is exactly the sort of background
+  // work that makes a laptop warm for a number nobody is reading. So: on hover,
+  // cached briefly, and abandoned the moment the pointer leaves.
+  const wtStatusCache = new Map();      // id -> {at, data}
+  let wtHoverTimer = null, wtHoverId = '';
+
+  function wtStatusText(s) {
+    const bits = [];
+    if (s.ahead) bits.push(s.ahead + ' commit' + (s.ahead === 1 ? '' : 's'));
+    if (s.dirty) bits.push(s.dirty + ' uncommitted');
+    return bits.length ? bits.join(' · ') : 'nothing to push';
+  }
+
+  function wtPaintHover(g, br, s) {
+    if (wtHoverId !== g.id) return;     // the pointer moved on; leave it alone
+    br.classList.add('sec-branch-live');
+    br.textContent = '';
+    const txt = document.createElement('span');
+    txt.textContent = wtStatusText(s);
+    br.appendChild(txt);
+    if (s.ahead || s.dirty) {
+      const fin = document.createElement('button');
+      fin.className = 'sec-finish';
+      fin.textContent = 'Finish';
+      fin.title = 'Commit what is here, push ' + g.branch + ', open a pull request';
+      fin.addEventListener('click', ev => { ev.stopPropagation(); wtFinish(g, s); });
+      br.appendChild(fin);
+    }
+  }
+
+  async function wtHoverIn(g, br) {
+    wtHoverId = g.id;
+    clearTimeout(wtHoverTimer);
+    // Paint the last answer immediately so the line does not flicker, then go
+    // and check anyway: this is a number you look at to decide something, and a
+    // cached "nothing to push" a second after you saved a file is a lie.
+    const hit = wtStatusCache.get(g.id);
+    if (hit) wtPaintHover(g, br, hit.data);
+    // A short delay so sweeping the pointer down the rail does not fire a git
+    // command per group on the way past.
+    wtHoverTimer = setTimeout(async () => {
+      if (wtHoverId !== g.id) return;
+      try {
+        const r = await fetch('/api/terminal/worktree/status?id=' + encodeURIComponent(g.id));
+        const j = await r.json();
+        if (!j.ok) return;
+        wtStatusCache.set(g.id, { at: Date.now(), data: j });
+        wtPaintHover(g, br, j);
+      } catch (e) {}
+    }, 220);
+  }
+
+  function wtHoverOut(g, br) {
+    if (wtHoverId === g.id) wtHoverId = '';
+    clearTimeout(wtHoverTimer);
+    br.classList.remove('sec-branch-live');
+    br.textContent = g.branch;
+  }
+
+  // Push and PR reach off this machine, so the confirm spells out every step
+  // before any of them happens - and says which are irreversible.
+  function wtFinish(g, s) {
+    const lines = [];
+    if (s.dirty) lines.push('Commit ' + s.dirty + ' uncommitted file'
+      + (s.dirty === 1 ? '' : 's') + ' here.');
+    lines.push('Push ' + g.branch + ' to origin.');
+    lines.push('Open a pull request into ' + (s.base || 'the main branch') + '.');
+    askConfirm('Finish "' + g.name + '"?',
+      lines.join('\n') + '\n\nNothing is merged and nothing is deployed.',
+      'Push and open PR', () => wtFinishDo(g));
+  }
+
+  async function wtFinishDo(g) {
+    toast('Pushing ' + g.branch + '...');
+    try {
+      const r = await fetch('/api/terminal/worktree/finish', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: g.id, host: wtHostOf(g) })
+      });
+      const j = await r.json();
+      if (!j.ok) { toast(j.error || 'Could not finish that'); return; }
+      wtStatusCache.delete(g.id);
+      if (j.pr) {
+        openLink(j.pr);
+        toast('Pushed and opened the PR');
+      } else {
+        toast('Pushed ' + j.branch + (j.warning ? ' - ' + j.warning : ' - no PR opened'));
+      }
+    } catch (e) { toast('Could not finish that'); }
+  }
+
   function wtHeader(g, count) {
     const collapsed = wtCollapsed.has(g.id);
     const h = document.createElement('div');
@@ -2181,9 +2355,17 @@
     l.className = 'sec-host';
     l.textContent = g.name;
 
+    // The branch line doubles as the status line. Hovering the group swaps it
+    // for what the worktree is holding, and for the one action that ends the
+    // round trip - so neither costs a millimetre of the rail until you reach
+    // for it, and the count is never fetched until you look.
     const br = document.createElement('span');
     br.className = 'sec-branch';
     br.textContent = g.missing ? 'checkout gone' : g.branch;
+    if (!g.missing) {
+      h.addEventListener('mouseenter', () => wtHoverIn(g, br));
+      h.addEventListener('mouseleave', () => wtHoverOut(g, br));
+    }
 
     const c = document.createElement('span');
     c.className = 'sec-count';
@@ -2193,10 +2375,15 @@
 
     const add = document.createElement('button');
     add.className = 'sec-add';
-    add.textContent = '+';
-    add.title = 'Another session in this worktree';
-    add.disabled = !!g.missing || count >= wtMaxFor(wtHostOf(g));
-    add.addEventListener('click', ev => { ev.stopPropagation(); wtAdd(g.id); });
+    add.textContent = wtAdding.has(g.id) ? '\u00b7\u00b7\u00b7' : '+';
+    add.title = 'Another session in this worktree, with claude running'
+              + ' - alt-click for a plain shell';
+    add.disabled = !!g.missing || wtAdding.has(g.id)
+                || count >= wtMaxFor(wtHostOf(g));
+    add.addEventListener('click', ev => {
+      ev.stopPropagation();
+      wtAdd(g.id, ev.altKey);
+    });
     h.appendChild(add);
 
     const rm = document.createElement('button');
@@ -2220,19 +2407,47 @@
     return h;
   }
 
-  async function wtAdd(id) {
+  // A shell added to a worktree now comes up the way the ones the worktree was
+  // created with do: claude already running, and the worktree brief already
+  // handed to it. This was the one door into a worktree that dropped you at a
+  // bare prompt, so every session added after the first began with typing
+  // `claude` and then explaining the checkout to it by hand. Alt-click still
+  // gets a plain shell - the same convention as the new-session button.
+  //
+  // The pane also opens on the answer rather than after both listings have been
+  // re-read. Those are a round trip each, and the box's session list is served
+  // from a snapshot up to three seconds old, so the wait was several seconds of
+  // nothing visibly happening after a click that had already worked. What the
+  // call returns is enough to draw the row and open the pane; the refreshes
+  // land behind it and reconcile.
+  const wtAdding = new Set();
+  async function wtAdd(id, plain) {
+    if (wtAdding.has(id)) return;    // a double-click is one session, not two
     const g = worktrees.find(w => w.id === id);
+    wtAdding.add(id);
+    renderSessions();
     try {
       const r = await fetch('/api/terminal/worktree/add-session', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, host: wtHostOf(g) })
+        body: JSON.stringify({ id, host: wtHostOf(g), autostart: !plain })
       });
       const j = await r.json();
       if (!j.ok) { toast(j.error || 'Could not add a session'); return; }
-      await refreshWorktrees();
-      await refreshSessions();
-      if (j.session) switchTo(j.session.id);
+      if (j.session) {
+        // Draw it from the answer, in its group, before anything is re-read.
+        if (!sessions.some(x => x.id === j.session.id)) sessions = sessions.concat([j.session]);
+        wtSids.set(j.session.id, id);
+        if (g && !(g.sessions || []).includes(j.session.id)) {
+          g.sessions = (g.sessions || []).concat([j.session.id]);
+        }
+        wtAdding.delete(id);
+        renderSessions();
+        switchTo(j.session.id);
+      }
+      refreshWorktrees();
+      refreshSessions();
     } catch { toast('Could not add a session'); }
+    finally { wtAdding.delete(id); renderSessions(); }
   }
 
   // The server refuses a worktree with uncommitted work WITHOUT closing
@@ -2286,6 +2501,7 @@
   const wtRepoSelEl   = document.getElementById('wtRepoSel');
   const wtRepoLabelEl = document.querySelector('.wt-labelrow label');
   const wtCloneLinkEl = document.getElementById('wtCloneLink');
+  const wtStaleEl     = document.getElementById('wtStale');
   const wtBaseMainEl  = document.getElementById('wtBaseMain');
   const wtBaseCurEl   = document.getElementById('wtBaseCur');
   const ghBackdrop = document.getElementById('ghBackdrop');
@@ -2369,13 +2585,18 @@
     wtBaseEl.value = home;
     wtSyncBaseButtons();
 
+    // "Nothing found" and "not looked yet" are different answers, and the first
+    // scan takes about a second. Saying there are no repositories while still
+    // counting them is worse than saying nothing.
     const none = !entry;
-    wtWarnEl.style.display = none ? '' : 'none';
-    wtWarnEl.textContent = none
+    const searching = none && !wtReposLoaded;
+    wtWarnEl.style.display = (none && !searching) ? '' : 'none';
+    wtWarnEl.textContent = (none && !searching)
       ? (wtRepoInfo(wtHost).online === false
          ? 'That machine did not answer, so there is nothing to branch from.'
          : 'No git repository found on that machine to branch from.')
       : '';
+    if (searching) wtFolderEl.textContent = 'Looking for repositories...';
     wtGoEl.disabled = none;
   }
 
@@ -2410,6 +2631,7 @@
     // that waiting for it before drawing anything would read as a stuck button.
     // Redrawn only if the answer actually differs, so a base branch you typed
     // over is not wiped a second after you typed it.
+    wtLoadStale();
     const before = JSON.stringify(wtRepos);
     await refreshRepos();
     if (wtBackdrop.classList.contains('open') && JSON.stringify(wtRepos) !== before) {
@@ -2603,6 +2825,52 @@
   wtBaseEl.addEventListener('input', wtSyncBaseButtons);
   wtCloneLinkEl.addEventListener('click', ghOpen);
 
+  // Branches a removed worktree left behind. Only ever the empty ones - a branch
+  // with commits in it is the reason removal keeps branches at all.
+  let wtStale = { repos: [], total: 0 };
+
+  async function wtLoadStale() {
+    wtStaleEl.style.display = 'none';
+    try {
+      const r = await fetch('/api/terminal/worktree/stale');
+      const j = await r.json();
+      if (!j.ok || !j.total) return;
+      wtStale = j;
+      wtStaleEl.innerHTML = '';
+      wtStaleEl.appendChild(document.createTextNode(
+        j.total + ' empty branch' + (j.total === 1 ? '' : 'es') + ' left by removed worktrees. '));
+      const b = document.createElement('button');
+      b.textContent = 'Clean up';
+      b.addEventListener('click', wtCleanStale);
+      wtStaleEl.appendChild(b);
+      wtStaleEl.style.display = '';
+    } catch (e) {}
+  }
+
+  function wtCleanStale() {
+    const lines = wtStale.repos.map(r => r.name + ': ' + r.branches.join(', '));
+    askConfirm('Delete ' + wtStale.total + ' empty branch'
+        + (wtStale.total === 1 ? '' : 'es') + '?',
+      lines.join('\n') + '\n\nEach of these has nothing in it that the main '
+      + 'branch does not already have. Anything with commits is left alone.',
+      'Delete them', async () => {
+        let gone = 0;
+        for (const r of wtStale.repos) {
+          try {
+            const res = await fetch('/api/terminal/worktree/prune-branches', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ repo: r.repo, branches: r.branches })
+            });
+            const j = await res.json();
+            gone += (j.deleted || []).length;
+          } catch (e) {}
+        }
+        toast(gone ? 'Deleted ' + gone + ' branch' + (gone === 1 ? '' : 'es')
+                   : 'Nothing was deleted');
+        wtLoadStale();
+      });
+  }
+
   function wtPickHost(h) { wtHost = h; savePref('wtHost', h); wtApplyHost(); }
   wtHostLocalEl.addEventListener('click', () => wtPickHost('local'));
   wtHostVpsEl.addEventListener('click', () => {
@@ -2668,9 +2936,9 @@
       sessListEl.appendChild(sectionHeader('VPS', {
         host: vpsInfo.host || '',
         note: note,
-        onAdd: () => newSession('vps'),
+        onAdd: ev => newSession('vps', !!(ev && ev.altKey)),
         addDisabled: !vpsInfo.online,
-        addTitle: 'New VPS session',
+        addTitle: 'New VPS session with claude running - alt-click for a plain shell',
       }));
       for (const s of vpsSessions) {
         if (wtSids.has(s.id)) continue;   // drawn under its worktree, below
@@ -3155,10 +3423,13 @@
   // host: 'vps' starts the session on the box (via the proxy); anything else
   // starts it locally. The returned id is already namespaced by the server, so
   // switchTo lands on the right pane either way.
-  async function newSession(host) {
+  // A new terminal starts claude, because that is what a new terminal here is
+  // for. Alt-click when you want a plain shell instead - the tooltip says so.
+  async function newSession(host, plain) {
     btnNew.disabled = true;
     try {
-      const body = host === 'vps' ? { host: 'vps' } : {};
+      const body = { autostart: !plain };
+      if (host === 'vps') body.host = 'vps';
       const r = await fetch('/api/terminal/start', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
@@ -3170,7 +3441,8 @@
       }
     } catch {} finally { btnNew.disabled = false; }
   }
-  btnNew.addEventListener('click', () => newSession());
+  btnNew.addEventListener('click', ev => newSession(undefined, ev.altKey));
+  btnNew.title = 'New session with claude running - alt-click for a plain shell';
 
   // Unconditional: the stream that most needs this button is the one still
   // claiming to be connected through a socket that stopped delivering.
