@@ -622,7 +622,7 @@
     </div>
     <div class="wt-field">
       <label for="wtCount">Sessions</label>
-      <input type="number" id="wtCount" min="1" max="6" value="2">
+      <input type="number" id="wtCount" min="1" max="10" value="2">
     </div>
     <label class="wt-check"><input type="checkbox" id="wtAuto"> Run claude in each session</label>
     <div class="wt-stale" id="wtStale" style="display:none"></div>
@@ -2174,7 +2174,7 @@
   // Each machine answers for itself: they are rarely on the same branch, and
   // only one of them may even be reachable.
   let wtHosts = {
-    local: { current_branch: '', folder: '', is_repo: true, max_sessions: 6, online: true },
+    local: { current_branch: '', folder: '', is_repo: true, max_sessions: 10, online: true },
     vps:   { current_branch: '', folder: '', is_repo: true, max_sessions: 6, online: false },
   };
   let wtVps = { enabled: false, online: false, host: '' };

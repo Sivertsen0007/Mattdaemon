@@ -65,7 +65,11 @@ SEED_PATHS = ["shared/.env", ".env", ".env.local"]
 # the only ids we ever need are ones this module generated from a slug.
 WT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
-MAX_SESSIONS = 6
+# Ceiling on shells in one worktree. Not a technical limit - sessions are tmux
+# panes and the dashboard colours them from one poll rather than a stream each,
+# so the browser's ~6-connections-per-host cap never applies. It is a guard
+# against a slip in the form turning into a wall of shells you did not want.
+MAX_SESSIONS = 10
 
 
 # Where to look for repos to offer in the picker. The folder the app is set to is
