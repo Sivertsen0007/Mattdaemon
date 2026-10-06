@@ -43,6 +43,17 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
+# Name ourselves on every outbound request. The box's public door is the
+# Cloudflare tunnel (https://hub.mlmediahub.com) since 2026-09-17, when :3333 was
+# bound to localhost; Cloudflare's browser-integrity check answers urllib's default
+# "Python-urllib/3.x" with 403 "error code: 1010" before the request ever reaches
+# the box, so the app read the VPS as offline while curl, with its own agent, got
+# straight through. Installed on the global opener so every urlopen here - JSON
+# calls, the SSE stream, uploads - carries it, including ones added later.
+_OPENER = urllib.request.build_opener()
+_OPENER.addheaders = [("User-Agent", "Mattdaemon/1.0")]
+urllib.request.install_opener(_OPENER)
+
 
 # terminal_manager reads TERMINAL_HOME at import time to decide where new
 # sessions start (its module-level START_DIR). So --home MUST be applied to the
@@ -77,6 +88,14 @@ _CONTENT_TYPES = {
     ".woff2": "font/woff2",
     ".ttf": "font/ttf",
     ".txt": "text/plain; charset=utf-8",
+    # What term-show hands over, now that it opens in a browser: a type the
+    # browser knows is the difference between showing the thing and downloading
+    # it. A PDF report is the common one.
+    ".pdf": "application/pdf",
+    ".md": "text/plain; charset=utf-8",
+    ".csv": "text/plain; charset=utf-8",
+    ".webp": "image/webp",
+    ".avif": "image/avif",
 }
 
 
@@ -148,7 +167,14 @@ def _split_sid(sid):
 
 
 def _vps_headers():
-    return {"Authorization": "Bearer " + VPS_TOKEN}
+    # The User-Agent is not decoration. The box is reached through a Cloudflare
+    # tunnel, and the tunnel answers 403 to urllib's default
+    # "Python-urllib/3.x" - every call, sessions and plans alike, with a token
+    # that is perfectly good. The app then shows the box as simply offline,
+    # which is the one explanation that is not true. Any ordinary product token
+    # passes, so send one.
+    return {"Authorization": "Bearer " + VPS_TOKEN,
+            "User-Agent": "Mattdaemon/1.0 (macOS)"}
 
 
 def _vps_get_bytes(path):
@@ -212,10 +238,15 @@ def _vps_post_full(path, body, timeout=None):
         return 0, {"ok": False, "error": "vps unreachable: %s" % e}
 
 
-def _vps_start(name=None, autostart=False):
+def _vps_start(name=None, autostart=False, agent=None):
     """Start a session on the box and namespace the id it returns, so the
-    frontend switches straight to the new vps: pane."""
-    res = _vps_post("/api/terminal/start", {"name": name, "autostart": autostart})
+    frontend switches straight to the new vps: pane.
+
+    `agent` goes over as-is: the box runs the same registry this side does, and
+    it answers for a name it does not know rather than starting the wrong agent.
+    """
+    res = _vps_post("/api/terminal/start",
+                    {"name": name, "autostart": autostart, "agent": agent})
     if res and res.get("ok") and res.get("session"):
         sess = res["session"]
         sess["realid"] = sess.get("id", "")
@@ -543,7 +574,7 @@ def _merged_states():
 
     `plans` and `files` ride along on the same poll: they carry each session's
     @webplan and @webfile stamps, which is how a plan written by /farm and a
-    file shown with term-show reach the preview panel."""
+    file shown with term-show get opened in the browser."""
     res = terminal_manager.all_states()
     states = dict(res.get("states", {}))
     plans = dict(res.get("plans", {}))
@@ -1286,6 +1317,25 @@ def health():
     }
 
 
+CLIP_LOG = os.path.join(os.path.expanduser("~"), "Library", "Logs",
+                        "mattdaemon-clip.log")
+_CLIP_LOG_MAX = 512 * 1024
+
+
+def _clip_debug(data):
+    """Append one copy-attempt event. Truncates rather than rotates: this is a
+    breadcrumb trail for the last failure, not an archive."""
+    try:
+        if os.path.getsize(CLIP_LOG) > _CLIP_LOG_MAX:
+            os.remove(CLIP_LOG)
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(CLIP_LOG), exist_ok=True)
+    with open(CLIP_LOG, "a", encoding="utf-8") as fh:
+        fh.write("%s %s\n" % (time.strftime("%H:%M:%S"),
+                              json.dumps(data, ensure_ascii=False)[:2000]))
+
+
 class TerminalHandler(BaseHTTPRequestHandler):
     # Quiet by default; the request log is noise for a local app.
     def log_message(self, fmt, *args):
@@ -1429,10 +1479,11 @@ class TerminalHandler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def _serve_artifact(self):
-        """Serve a file a session produced, for the preview panel.
+        """Serve a file a session produced, for the browser to show.
 
         The path arrives either from a session's @webfile stamp (shared/term-show)
-        or from a term-link URL clicked in the terminal. A local file must resolve
+        or from a term-link URL clicked in the terminal. Either way the page
+        hands this URL to your default browser rather than opening it itself. A local file must resolve
         inside the repo the app was started on - the terminal can reach the whole
         disk, but this endpoint has no reason to. A vps: session's file lives on
         the box, so that one is fetched from the box's own endpoint, which also
@@ -1462,7 +1513,7 @@ class TerminalHandler(BaseHTTPRequestHandler):
         self._serve_file(target, _ctype_for(target))
 
     def _serve_plan(self):
-        """Serve a visual-plan HTML file for the side panel.
+        """Serve a visual-plan HTML file, for the browser to show.
 
         The path comes from a session's @webplan stamp, written by
         shared/term-plan when /farm produces a plan, and is restricted to
@@ -1745,14 +1796,22 @@ class TerminalHandler(BaseHTTPRequestHandler):
             # the selftests and the handover want a shell they can type into,
             # and a default of ON silently broke both.
             auto = bool(data.get("autostart"))
+            agent = data.get("agent") if auto else None
             if data.get("host") == "vps":
-                res = _vps_start(data.get("name"), auto)
+                res = _vps_start(data.get("name"), auto, agent)
                 if res.get("ok") and res.get("session"):
                     _vps_snap_add([res["session"]])
                 self._json(200, res)
                 return
+            # A name we do not know is the caller's mistake, and the only
+            # failure here that is: everything else start_session can refuse is
+            # a state of this machine, which it has always answered 200 with.
+            if auto and terminal_manager.agent_spec(agent) is None:
+                self._json(400, {"ok": False,
+                                 "error": "unknown agent: %s" % agent})
+                return
             self._json(200, terminal_manager.start_session(
-                data.get("name"), autostart=auto))
+                data.get("name"), autostart=auto, agent=agent))
             return
 
         if path == "/api/terminal/github/clone":
@@ -1844,14 +1903,16 @@ class TerminalHandler(BaseHTTPRequestHandler):
                     return
                 result = terminal_manager.create_worktree_group(
                     data.get("name", ""), data.get("base"), data.get("count", 1),
-                    bool(data.get("autostart")), data.get("repo"))
+                    bool(data.get("autostart")), data.get("repo"),
+                    data.get("agent"))
                 self._json(200 if result.get("ok") else 400, result)
                 return
             if path == "/api/terminal/worktree/add-session":
                 if self._blocked_by_setup():
                     return
                 result = terminal_manager.add_session_to_worktree(
-                    wid, data.get("name"), bool(data.get("autostart")))
+                    wid, data.get("name"), bool(data.get("autostart")),
+                    data.get("agent"))
                 self._json(200 if result.get("ok") else 400, result)
                 return
             # A removal refusal is a 409, not a 400: the request was well formed
@@ -1897,6 +1958,19 @@ class TerminalHandler(BaseHTTPRequestHandler):
             if path == "/api/terminal/stop" and res.get("ok"):
                 _vps_snap_drop([data.get("sid", "")])
             self._json(200, res)
+            return
+
+        if path == "/api/terminal/clipdebug":
+            # A copy that fails leaves nothing behind to look at: the toast is
+            # gone in three seconds and the page's console dies with the window.
+            # This writes one line per step of a copy attempt to a file, so a
+            # report of "it still does not work" can be answered by reading
+            # rather than by guessing.
+            try:
+                _clip_debug(data)
+            except Exception:
+                pass
+            self._json(200, {"ok": True})
             return
 
         if path == "/api/terminal/input":

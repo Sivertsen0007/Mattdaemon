@@ -45,6 +45,7 @@ import pty
 import queue
 import re
 import select
+import shlex
 import shutil
 import signal
 import struct
@@ -173,7 +174,7 @@ def _list_sessions_raw():
     answered=False means tmux did not give us a usable answer, so the caller must
     not conclude anything - least of all that every session is gone.
     """
-    fmt = "#{session_name}\t#{session_created}\t#{window_width}\t#{window_height}\t#{@webname}\t#{@webplan}\t#{@webloop}\t#{pane_current_command}\t#{pane_pid}\t#{@webstate}\t#{@webfile}\t#{session_activity}\t#{@webworktree}\t#{@webwtname}"
+    fmt = "#{session_name}\t#{session_created}\t#{window_width}\t#{window_height}\t#{@webname}\t#{@webplan}\t#{@webloop}\t#{pane_current_command}\t#{pane_pid}\t#{@webstate}\t#{@webfile}\t#{session_activity}\t#{@webworktree}\t#{@webwtname}\t#{@webagent}\t#{window_activity}\t#{@webneed}"
     r = _tmux("list-sessions", "-F", fmt)
     if r.returncode != 0:
         # A dead server genuinely means zero sessions; anything else is unknown.
@@ -199,18 +200,37 @@ def _list_sessions_raw():
         pid = parts[8] if len(parts) > 8 else ""
         webstate = parts[9] if len(parts) > 9 else ""
         webfile = parts[10] if len(parts) > 10 else ""
-        # tmux stamps session_activity whenever the session produces output. It
-        # is what lets the status poll skip re-reading panes that cannot have
-        # changed - see _pane_signals.
-        activity = parts[11] if len(parts) > 11 else ""
         worktree = parts[12] if len(parts) > 12 else ""
         wtname = parts[13] if len(parts) > 13 else ""
+        agent = parts[14] if len(parts) > 14 else ""
+        # Why this session wants you, stamped by the Claude Code hook at the
+        # moment it happened: `kind|epoch|headline`. The pane can tell you a box
+        # is open; only the hook knows it is ExitPlanMode and not a Bash
+        # permission, and only the transcript knows what the turn produced.
+        webneed = parts[16] if len(parts) > 16 else ""
+        # The "has this pane changed?" stamp that lets the status poll skip
+        # re-reading a screen that cannot have moved - see _pane_signals.
+        #
+        # It must be `window_activity`. `session_activity` is NOT an output
+        # timestamp despite the name: tmux only touches it from
+        # session_update_activity() - session created, client switched onto it -
+        # so on a long-lived session it is frozen, measured here as never moving
+        # again over minutes of Claude drawing to the pane (tmux 3.4 and 3.5a
+        # alike). Keying the cache on it meant the pane was read ONCE and the
+        # answer kept forever: whatever the screen said at that moment is what
+        # the dot showed all day. A session that happened to be caught mid
+        # permission box stayed red long after it was answered; one caught idle
+        # never went yellow again. `window_activity` does move on every write to
+        # the pane. Both are kept in the key so a tmux that revives
+        # session_activity still invalidates.
+        activity = "%s/%s" % (parts[11] if len(parts) > 11 else "",
+                              parts[15] if len(parts) > 15 else "")
         out.append({
             "id": sid, "name": name, "alive": True,
             "cols": cols, "rows": rows, "created_at": created, "plan": plan,
             "loop": loop, "cmd": cmd, "pid": pid, "webstate": webstate,
-            "webfile": webfile, "activity": activity,
-            "worktree": worktree, "worktree_name": wtname,
+            "webfile": webfile, "activity": activity, "webneed": webneed,
+            "worktree": worktree, "worktree_name": wtname, "agent": agent,
         })
     out.sort(key=lambda s: s["created_at"])
     with _last_good_lock:
@@ -404,8 +424,9 @@ def _loop_deadline(raw):
 
 
 # Commands that mean "nothing is running here". A shell at its prompt is idle;
-# Claude sitting at its input box is idle too, and only its own UI text (below)
-# can tell its idle apart from its working. Every OTHER foreground command -
+# an agent sitting at its input box is idle too - claude and codex both - and
+# only its own UI text (below) can tell its idle apart from its working. Every
+# OTHER foreground command -
 # npm, pytest, git, curl, a build - IS work, and the pane text alone cannot see
 # it: a quiet build looks exactly like a quiet prompt.
 #
@@ -413,7 +434,7 @@ def _loop_deadline(raw):
 # excluding it would strand those sessions permanently yellow - a dot that lies
 # every second is worse than one that misses a bare `node script.js`.
 _QUIET_CMDS = {"bash", "zsh", "sh", "fish", "dash", "ksh", "tmux",
-               "claude", "node"}
+               "claude", "codex", "node"}
 
 # A background job (`cmd &`) or a command Claude launched with run_in_background
 # never changes pane_current_command and prints no "esc to interrupt", so the
@@ -428,7 +449,10 @@ _SPINE_SHELLS = {"bash", "zsh", "sh", "fish", "dash", "ksh",
 # Ambiguous runtimes: a childless one is idle scaffolding (an idle Claude often
 # shows as `node`); one that has spawned children is doing work. Kept in step
 # with the `node` reasoning in _QUIET_CMDS - miss a bare `node x.js`, never lie.
-_AMBIGUOUS_RUNTIME = {"claude", "node"}
+# `codex` is here for the same reason `claude` is: it keeps children that are
+# not its main loop (the shells it runs commands in), and it says "esc to
+# interrupt" on its own while it is genuinely busy - which is caught above.
+_AMBIGUOUS_RUNTIME = {"claude", "codex", "node"}
 
 # Claude Code renames its own process to its version, so on macOS tmux reports
 # the pane's foreground command as e.g. "2.1.199" instead of "claude". A bare
@@ -441,6 +465,15 @@ _VERSION_RE = re.compile(r"^v?\d+(?:\.\d+)+$")
 
 def _looks_like_version(cmd):
     return bool(cmd and _VERSION_RE.match(cmd.strip()))
+
+
+def _agent_foreground(cmd):
+    """True when the pane's foreground process is the agent itself.
+
+    Covers the shapes they report as: `claude`, `codex`, `node`, and a bare
+    version string like "2.1.251" (tmux reads Claude's renamed process that way).
+    """
+    return (cmd or "").lower() in _AMBIGUOUS_RUNTIME or _looks_like_version(cmd)
 
 
 # How much of the bottom of a pane counts as "what this session is doing or
@@ -473,7 +506,101 @@ def _pane_tail(low):
 # The caret alone would not do: it also draws the input line you type into. With
 # a number after it, it is a list, and a list in the live region is one nobody
 # has answered.
-_CHOICE_RE = re.compile(r"^\s*\u276f\s*\d+[.)]\s+\S", re.M)
+# Two carets, because two agents draw this box: Claude selects with ❯ (u276f),
+# Codex with › (u203a). Matching only Claude's is why a Codex session waiting on
+# an approval sat green - the one thing the dot exists to tell you.
+_CHOICE_RE = re.compile(r"^\s*[\u276f\u203a]\s*\d+[.)]\s+\S", re.M)
+
+
+# ── Why a waiting pane is waiting (inference, not fact) ─────────────────────
+#
+# The Claude Code hook is the EXACT source for this (see _parse_need): it knows
+# the tool name, so it can say "ExitPlanMode" rather than "a box is open". But
+# Codex has no hooks, and neither does a plain `apt` asking y/n, so a waiting
+# pane must still be readable off its own live region. Everything here is
+# therefore best-effort and is reported with source="pane", so the UI can show
+# the raw prompt line rather than pass inference off as certainty.
+#
+# Deliberately NOT used by classify_session: the dot's rank order is untouched
+# by any of this, so nothing below can change a session's colour.
+
+# Box drawing + block elements. Every agent draws its prompt inside a frame, and
+# the frame is noise in a headline.
+_BOX_RE = re.compile("[─-╿▀-▟]")
+
+# The same pick-one shape as _CHOICE_RE, but tolerant of a leading frame edge,
+# because an option INSIDE a box starts with the border and not with the caret.
+# _CHOICE_RE itself is load-bearing for the status dots and is left exactly as
+# it is - this is only ever used to find where a headline stops.
+_OPT_RE = re.compile(r"^[\s│┃║|]*[❯›]\s*\d+[.)]\s+\S")
+
+# Lines that are true of every prompt and therefore say nothing about this one.
+_GENERIC = (
+    "do you want to proceed?", "would you like to proceed?",
+    "do you want to make this edit", "do you want to create",
+    "press enter to confirm or esc to cancel", "press enter to continue",
+    "esc to cancel", "(y/n)", "y/n",
+)
+
+_MAX_HEADLINE = 90
+
+
+def _clean_line(line):
+    return " ".join(_BOX_RE.sub(" ", line).split())
+
+
+def _trim(text):
+    text = (text or "").strip()
+    return text[:_MAX_HEADLINE - 1] + "…" if len(text) > _MAX_HEADLINE else text
+
+
+def _pane_reason(raw_tail, low_tail):
+    """(kind, headline) for a pane that is waiting on you.
+
+    kind is one of approval / plan / question, or "" when the pane is waiting in
+    a way we cannot name - the caller then falls back to a generic item, which
+    is still better than silence.
+    """
+    lines = raw_tail.splitlines()
+    first_opt = next((i for i, ln in enumerate(lines) if _OPT_RE.match(ln)), len(lines))
+
+    # The block above the options, cleaned of the frame and of the lines that
+    # every prompt carries. What is left is what makes THIS prompt specific.
+    said = []
+    for ln in lines[:first_opt]:
+        c = _clean_line(ln)
+        if not c or c.lower() in _GENERIC:
+            continue
+        if said and said[-1] == c:
+            continue
+        said.append(c)
+
+    kind = ""
+    if "do you trust the contents of this directory" in low_tail:
+        return "approval", "Folder trust"
+    if ("no, keep planning" in low_tail or "ready to code?" in low_tail):
+        kind = "plan"
+    elif "would you like to run the following command?" in low_tail:
+        # Codex names the command on its own line; that IS the headline.
+        cmd = next((_clean_line(ln) for ln in reversed(lines[:first_opt])
+                    if _clean_line(ln).startswith("$ ")), "")
+        return "approval", _trim(cmd.lstrip("$ ").strip() or "run a command")
+    elif ("do you want to" in low_tail or "don't ask again" in low_tail
+          or "y/n" in low_tail or "press enter to confirm" in low_tail
+          or "press enter to continue" in low_tail):
+        kind = "approval"
+    elif first_opt < len(lines):
+        # A pick-one list with none of the wording above: a question.
+        kind = "question"
+    elif "would you like to proceed" in low_tail:
+        kind = "plan"
+
+    if not kind:
+        return "", ""
+    # The last two lines of the block are the specific ones: a Claude permission
+    # box reads "Bash command" then the command itself, so taking the tail of
+    # the block is what names the thing rather than its category.
+    return kind, _trim(" - ".join(said[-2:]))
 
 
 def _build_proc_tree():
@@ -556,42 +683,68 @@ def _parse_webstate(raw):
 # machine. Most of those reads answer a question that cannot have changed - a
 # session that has produced no output since the last poll shows the same screen.
 #
-# tmux already tracks that as session_activity, so the pane text is only re-read
-# when it moves. The cheap signals (foreground command, process subtree, hook
-# stamp) are still evaluated on every poll, so work that starts silently is
-# still caught within one poll.
-_pane_cache = {}                 # sid -> (activity, (interrupt, prompt))
+# tmux already tracks that as window_activity (see _list_sessions_raw for why it
+# is that one and not session_activity), so the pane text is only re-read when it
+# moves. The cheap signals (foreground command, process subtree, hook stamp) are
+# still evaluated on every poll, so work that starts silently is still caught
+# within one poll.
+#
+# The stamp is a cache key, never a lease: an entry also expires on its own after
+# _PANE_CACHE_TTL. That is deliberate insurance, because the whole class of bug
+# this cache has caused is a timestamp that stops moving - and a dot frozen on a
+# stale screen is the one failure the status dots cannot survive, since the one
+# thing they exist to say (THIS SESSION IS WAITING FOR YOU) is exactly what a
+# frozen dot gets wrong. With the TTL, the worst any future dead stamp can do is
+# delay a dot by a few seconds instead of pinning it forever.
+_PANE_CACHE_TTL = 8.0            # seconds an unchanged stamp may skip a re-read
+_pane_cache = {}                 # sid -> (activity, (interrupt, prompt), read_at)
 _pane_cache_lock = threading.Lock()
 
 
 def _pane_signals(sid, activity):
-    """(esc_to_interrupt, prompt_waiting) for a session, re-reading the pane only
-    when tmux says the session has produced output since we last looked.
-    Returns None when tmux says the session is gone."""
+    """(esc_to_interrupt, prompt_waiting, kind, headline), re-reading the pane
+    only when tmux says the session has produced output since we last looked.
+    Returns None when tmux says the session is gone.
+
+    The reason rides along with the booleans deliberately: it comes off the same
+    captured tail, under the same cache, so naming what a session wants costs no
+    extra `capture-pane`. That matters - this runs for every session every few
+    seconds, and the box has been throttled by less."""
     key = str(activity or "")
     if key:
         with _pane_cache_lock:
             hit = _pane_cache.get(sid)
-        if hit and hit[0] == key:
+        if hit and hit[0] == key and time.time() - hit[2] < _PANE_CACHE_TTL:
             return hit[1]
 
     r = _tmux("capture-pane", "-p", "-t", _sname(sid))
     if r.returncode != 0:
-        return None if _tmux_says_gone(r) else (False, False)
-    low = (r.stdout or "").lower()
+        return None if _tmux_says_gone(r) else (False, False, "", "")
+    raw = r.stdout or ""
+    low = raw.lower()
     tail = _pane_tail(low)
+    raw_tail = _pane_tail(raw)
     signals = (
         "esc to interrupt" in tail,
         ("do you want to" in tail
          or "would you like to proceed" in tail            # a plan awaiting your go-ahead
-         or "no, and tell claude what to do differently" in tail  # every permission box
+         # Each agent's permission box names itself, so both are spelled out
+         # rather than matching the shared half of the sentence: "what to do
+         # differently" on its own is a thing either of them might simply say.
+         or "no, and tell claude what to do differently" in tail
+         or "no, and tell codex what to do differently" in tail
          or bool(_CHOICE_RE.search(tail))
          or "y/n" in tail or "(y/n)" in tail or "[y/n]" in tail
-         or "press enter to continue" in tail),
+         or "press enter to continue" in tail
+         # Codex's approval footer. The caret shape above catches the same
+         # screen, but this one survives a box long enough to push its options
+         # out of the live region.
+         or "press enter to confirm" in tail),
     )
+    signals = signals + (_pane_reason(raw_tail, tail) if signals[1] else ("", ""))
     if key:
         with _pane_cache_lock:
-            _pane_cache[sid] = (key, signals)
+            _pane_cache[sid] = (key, signals, time.time())
     return signals
 
 
@@ -616,7 +769,7 @@ def classify_session(sid, loop_raw="", cmd="", pane_pid="", proc_kids=None,
     signals = _pane_signals(sid, activity)
     if signals is None:
         return "offline"
-    interrupt, prompt_waiting = signals
+    interrupt, prompt_waiting = signals[0], signals[1]
     ws, ws_ts = _parse_webstate((webstate or "").strip().lower())
     if interrupt:
         return "working"
@@ -641,11 +794,23 @@ def classify_session(sid, loop_raw="", cmd="", pane_pid="", proc_kids=None,
     # still shows red rather than being painted over yellow.
     if cmd and cmd.lower() not in _QUIET_CMDS and not _looks_like_version(cmd):
         return "working"
-    # Background work the checks above cannot see: a `cmd &` job, or a command
-    # Claude launched with run_in_background. It never changes the foreground
-    # command and prints no spinner, so we inspect the process subtree. Ranked
-    # BELOW attention so a y/n prompt still shows red, not yellow.
-    if _subtree_has_work(pane_pid, proc_kids):
+    # Background work the checks above cannot see: a `cmd &` job in a plain
+    # shell. It never changes the foreground command and prints no spinner, so
+    # we inspect the process subtree. Ranked BELOW attention so a y/n prompt
+    # still shows red, not yellow.
+    #
+    # NOT under Claude, and that exclusion is the whole point. Claude keeps
+    # children alive that have nothing to do with whether it needs you: a shell
+    # started with run_in_background, a dev server, an MCP process. The pane
+    # says so plainly - "1 shell", "3 shells", "↓ to manage" - while the main
+    # loop sits at the prompt waiting for an answer. Counting those as work is
+    # the same mistake the agent rows were: it pinned finished sessions yellow,
+    # so the one thing the dot exists to tell you - THIS ONE IS WAITING FOR YOU
+    # - was exactly what it hid. A busy Claude is caught above by "esc to
+    # interrupt" and by its own fresh `working` stamp; that is the main loop,
+    # which is what the dot answers for. The background shell is still visible
+    # in the pane; the dot just stops lying about whose turn it is.
+    if not _agent_foreground(cmd) and _subtree_has_work(pane_pid, proc_kids):
         return "working"
     # The hook stamped working (PreToolUse / prompt) - trust it only while Claude
     # is still the foreground process, so a dead session that never fired Stop
@@ -795,8 +960,32 @@ def session_diff(sid):
     return {"ok": True, "cwd": cwd, "repo": top, "text": text}
 
 
-_TRUST_MARKERS = ("do you trust the files in this folder",
-                  "yes, i trust this folder")
+# The agents a session can be autostarted with. `cmd` is typed into the fresh
+# shell; `trust` is the folder prompt that agent opens with in a directory it has
+# never seen (answered with Enter - the accepting option is the one already
+# selected in both); `brief_as_arg` is how it takes an opening brief - codex
+# reads one as a positional argument, claude has to be typed at once its input is
+# listening, which is the whole reason _prime_agent watches the pane at all.
+AGENTS = {
+    "claude": {"name": "claude", "label": "Claude", "cmd": "claude",
+               "brief_as_arg": False,
+               "trust": ("do you trust the files in this folder",
+                         "yes, i trust this folder")},
+    "codex":  {"name": "codex", "label": "Codex", "cmd": "codex",
+               "brief_as_arg": True,
+               "trust": ("do you trust the contents of this directory",
+                         "yes, continue")},
+}
+DEFAULT_AGENT = "claude"
+
+
+def agent_spec(agent):
+    """The spec for an agent name, or None when it is not one we know.
+
+    An unknown name is never quietly turned into the default: a caller that asks
+    for codex and silently gets Claude is worse off than one that gets an error.
+    """
+    return AGENTS.get((agent or "").strip().lower() or DEFAULT_AGENT)
 # What a Claude that is up and waiting for you looks like. The input caret is the
 # signal: the footer text varies with version and settings - one session says
 # "auto mode on", another only "for agents" - but the caret is what "ready" means
@@ -813,12 +1002,12 @@ def _looks_ready(text):
 
 
 def worktree_brief(path, branch, repo, base, count):
-    """The one thing a fresh Claude in a worktree cannot work out for itself.
+    """The one thing a fresh agent in a worktree cannot work out for itself.
 
     It already knows the repo and the branch - it starts in the folder and reads
-    the repo's CLAUDE.md. What it cannot see is that this checkout is disposable,
-    which tree it must NOT wander into, that other terminals are editing the same
-    files, and where the work is supposed to end up.
+    the repo's own instructions file. What it cannot see is that this checkout
+    is disposable, which tree it must NOT wander into, that other terminals are
+    editing the same files, and where the work is supposed to end up.
 
     One line, because a newline would submit it half-written.
     """
@@ -835,19 +1024,23 @@ def worktree_brief(path, branch, repo, base, count):
         % (path, branch, base or "its base", repo, repo, others))
 
 
-def _prime_claude(sid, brief=None, window=90.0):
-    """Get Claude past its opening prompt and, optionally, hand it the brief.
+def _prime_agent(sid, spec, brief=None, window=90.0):
+    """Get the agent past its opening prompt and, optionally, hand it the brief.
 
-    Two things happen on a first launch in a brand new directory. Claude asks
+    Two things happen on a first launch in a brand new directory. The agent asks
     whether you trust the folder - always, because a worktree is a folder it has
     never seen - and until that is answered, "autostart" has delivered a session
     that is not actually started. Then it needs a moment before it can take input.
 
     Deliberately narrow on both counts: the trust prompt is answered only when
-    THAT prompt is on screen, and the brief is typed only once Claude looks
+    THAT agent's prompt is on screen, and the brief is typed only once it looks
     ready. Nothing is blind-fired into a terminal that might be showing something
     else entirely. If neither state ever appears, nothing is sent.
+
+    A brief is only ever typed for an agent that cannot be handed one on the
+    command line; the caller passes brief=None for the ones that can.
     """
+    trust_markers = spec["trust"]
     def watch():
         deadline = time.time() + window
         trusted = False
@@ -859,7 +1052,7 @@ def _prime_claude(sid, brief=None, window=90.0):
                     return
                 continue
             low = (r.stdout or "").lower()
-            if not trusted and any(m in low for m in _TRUST_MARKERS):
+            if not trusted and any(m in low for m in trust_markers):
                 _tmux("send-keys", "-t", _sname(sid), "Enter")
                 trusted = True
                 continue
@@ -867,7 +1060,7 @@ def _prime_claude(sid, brief=None, window=90.0):
                 if trusted:
                     return          # nothing else to do
                 continue
-            if _looks_ready(r.stdout or "") and not any(m in low for m in _TRUST_MARKERS):
+            if _looks_ready(r.stdout or "") and not any(m in low for m in trust_markers):
                 # Let it finish painting before typing into it - the caret shows
                 # up a moment before the input is actually listening.
                 time.sleep(1.5)
@@ -881,7 +1074,7 @@ def _prime_claude(sid, brief=None, window=90.0):
 
 
 def start_session(name=None, cwd=None, worktree=None, worktree_name=None,
-                  autostart=False, brief=None):
+                  autostart=False, brief=None, agent=None):
     """Create a new tmux-backed session.
 
     `cwd` opens it somewhere other than the configured working folder - used by
@@ -892,12 +1085,19 @@ def start_session(name=None, cwd=None, worktree=None, worktree_name=None,
     `worktree`/`worktree_name` stamp @webworktree/@webwtname, which is the whole
     of the grouping mechanism: list_sessions() reads them straight back out.
 
-    `autostart` types `claude` into the fresh shell. Off by default - a new
-    terminal should be a terminal, and starting an agent is a decision rather
-    than a side effect of opening a window.
+    `autostart` types an agent into the fresh shell and `agent` says which one
+    (claude when unsaid; see AGENTS). Off by default - a new terminal should be a
+    terminal, and starting an agent is a decision rather than a side effect of
+    opening a window.
     """
     if not _tmux_available():
         return {"ok": False, "error": "tmux not installed"}
+
+    # Resolved BEFORE the shell exists: a name we do not know is a mistake to
+    # answer with an error, not with a stray session sitting at a bare prompt.
+    spec = agent_spec(agent) if autostart else None
+    if autostart and spec is None:
+        return {"ok": False, "error": "unknown agent: %s" % agent}
 
     sid = uuid.uuid4().hex[:12]
     if name is None:
@@ -940,13 +1140,23 @@ def start_session(name=None, cwd=None, worktree=None, worktree_name=None,
         _tmux("set-option", "-t", _sname(sid), "@webwtname", worktree_name or worktree)
 
     if autostart:
-        _tmux("send-keys", "-t", _sname(sid), "claude", "Enter")
-        _prime_claude(sid, brief)
+        # @webagent is what the session is running, so the rail can say so and
+        # "one more session in this group" can start the same agent as the rest.
+        _tmux("set-option", "-t", _sname(sid), "@webagent", spec["name"])
+        # An agent that takes its brief on the command line gets it there: it
+        # arrives with the session instead of being typed in once the pane looks
+        # ready, which is one screen-scrape fewer to be wrong about.
+        line = spec["cmd"]
+        if brief and spec["brief_as_arg"]:
+            line = "%s %s" % (spec["cmd"], shlex.quote(brief))
+        _tmux("send-keys", "-t", _sname(sid), line, "Enter")
+        _prime_agent(sid, spec, None if spec["brief_as_arg"] else brief)
 
     return {"ok": True, "session": {
         "id": sid, "name": name, "alive": True,
         "cols": cols, "rows": rows, "created_at": time.time(),
         "worktree": worktree or "", "worktree_name": worktree_name or "",
+        "agent": spec["name"] if spec else "",
     }}
 
 
@@ -1102,7 +1312,8 @@ def github_repos():
         return {"ok": False, "error": str(e), "repos": []}
 
 
-def create_worktree_group(name, base=None, count=1, autostart=False, repo=None):
+def create_worktree_group(name, base=None, count=1, autostart=False, repo=None,
+                          agent=None):
     """One worktree plus `count` shells already inside it.
 
     A create that produces no shells at all disposes of the worktree again
@@ -1142,7 +1353,7 @@ def create_worktree_group(name, base=None, count=1, autostart=False, repo=None):
     for i in range(1, count + 1):
         r = start_session(name="%s %d" % (info["name"], i), cwd=info["path"],
                           worktree=info["id"], worktree_name=info["name"],
-                          autostart=autostart, brief=brief)
+                          autostart=autostart, brief=brief, agent=agent)
         if r.get("ok"):
             sessions.append(r["session"])
         else:
@@ -1162,7 +1373,7 @@ def create_worktree_group(name, base=None, count=1, autostart=False, repo=None):
     }, "sessions": sessions, "errors": errors}
 
 
-def add_session_to_worktree(wt_id, name=None, autostart=False):
+def add_session_to_worktree(wt_id, name=None, autostart=False, agent=None):
     """One more shell in an existing worktree."""
     if not terminal_worktree.exists(wt_id):
         return {"ok": False, "error": "worktree not found"}
@@ -1179,7 +1390,7 @@ def add_session_to_worktree(wt_id, name=None, autostart=False):
                            len(existing) + 1) if autostart else None
     return start_session(name=label, cwd=path,
                          worktree=wt_id, worktree_name=display,
-                         autostart=autostart, brief=brief)
+                         autostart=autostart, brief=brief, agent=agent)
 
 
 def remove_worktree_group(wt_id, force=False, keep_branch=True):

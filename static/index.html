@@ -56,6 +56,8 @@
   .ctx button{display:flex;align-items:center;gap:9px;width:100%;text-align:left;background:transparent;
     border:0;color:var(--inkMute);font-size:12px;padding:8px 10px;border-radius:5px;cursor:pointer;font-family:inherit}
   .ctx button:hover{background:#202023;color:var(--ink)}
+  /* the choice the button already makes, so the menu says what it will do */
+  .ctx button.on{background:#1c1c1f;color:var(--ink)}
   .ctx button.danger:hover{background:#2a1618;color:var(--red)}
   .ctx .sep{height:1px;background:var(--border);margin:4px 2px}
   .ctx .k{width:14px;text-align:center;opacity:.8}
@@ -117,6 +119,9 @@
     font-family:'JetBrains Mono',monospace}
   .btn-wt:hover{border-color:#3a3a3f;color:var(--ink);background:#202023}
   .btn-wt:disabled{opacity:.4;cursor:default}
+  /* which machine the agent menu is about to open a session on */
+  .ctx .head{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;
+    color:var(--inkDim);padding:5px 10px 4px}
 
   /* ---- a worktree, drawn as a folder of sessions ---- */
   .sess-section.sec-wt{cursor:pointer;user-select:none;flex-wrap:wrap;padding-bottom:4px}
@@ -153,6 +158,10 @@
   .wt-field select{width:100%;box-sizing:border-box;background:#0f0f10;
     border:1px solid var(--border);border-radius:6px;color:var(--ink);
     font-family:'JetBrains Mono',monospace;font-size:12.5px;padding:8px 10px;cursor:pointer}
+  .wt-agent{background:#0f0f10;border:1px solid var(--border);border-radius:5px;
+    color:var(--ink);font-family:'JetBrains Mono',monospace;font-size:12px;
+    padding:3px 6px;cursor:pointer}
+  .wt-agent:focus{outline:none;border-color:#45454b}
   /* ---- clone from GitHub ---- */
   .gh-list{max-height:190px;overflow-y:auto;border:1px solid var(--border);
     border-radius:6px;margin:0 0 12px}
@@ -366,29 +375,6 @@
 
   /* ---- terminal ---- */
   .term-wrap{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
-  /* ---- visual plan, opened beside the terminal ---- */
-  .plan-pane{display:none;flex:0 0 44%;min-width:320px;max-width:62%;
-    flex-direction:column;background:var(--surface);border-left:1px solid var(--border)}
-  .plan-pane.open{display:flex}
-  .plan-head{height:36px;flex:none;display:flex;align-items:center;gap:8px;
-    padding:0 8px 0 14px;border-bottom:1px solid var(--border);background:var(--surface2)}
-  .plan-tabs{flex:1;min-width:0;display:flex;align-items:center;gap:4px;overflow-x:auto;
-    scrollbar-width:none}
-  .plan-tabs::-webkit-scrollbar{display:none}
-  .ptab{flex:none;max-width:190px;display:flex;align-items:center;gap:7px;
-    padding:3px 7px 3px 9px;border:1px solid transparent;border-radius:5px;
-    background:transparent;color:var(--inkDim);cursor:pointer;
-    font-family:inherit;font-size:11px;letter-spacing:.04em}
-  .ptab:hover{background:#1c1c1f;color:var(--inkMute)}
-  .ptab.active{background:#202023;border-color:#33333a;color:var(--ink)}
-  .ptab .ptab-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .ptab .ptab-x{flex:none;font-size:9px;opacity:.45}
-  .ptab .ptab-x:hover{opacity:1;color:var(--red)}
-  .plan-btn{flex:none;width:22px;height:22px;line-height:20px;text-align:center;padding:0;
-    background:transparent;border:1px solid var(--border);border-radius:5px;
-    color:var(--inkMute);cursor:pointer;font-size:11px;font-family:inherit}
-  .plan-btn:hover{border-color:#3a3a3f;color:var(--ink);background:#202023}
-  .plan-frame{flex:1;width:100%;border:0;background:#fff}
   .sb-mc{width:100%;justify-content:center;margin:2px 0 6px}
   #mcOverlay{position:fixed;inset:0;z-index:1000;background:#0d0d0e;display:none;flex-direction:column}
   #mcOverlay.open{display:flex}
@@ -484,6 +470,10 @@
   .sess .where{font-size:9px;color:var(--inkDim);border:1px solid var(--border);border-radius:4px;
     padding:1px 4px;letter-spacing:.04em;flex:none;font-family:'JetBrains Mono',monospace}
   .sess.placed .where{color:var(--inkMute);border-color:#33333a}
+  /* Which agent a session is running, shown only when it is not the default -
+     a rail where every row said "claude" would say nothing at all. */
+  .sess .sagent{font-size:9px;color:var(--inkMute);border:1px solid #33333a;border-radius:4px;
+    padding:1px 4px;letter-spacing:.04em;flex:none;font-family:'JetBrains Mono',monospace}
   /* where the row would land if you let go now */
   .sess.drop-before{box-shadow:inset 0 2px 0 var(--ink)}
   .sess.drop-after{box-shadow:inset 0 -2px 0 var(--ink)}
@@ -494,7 +484,6 @@
      popped-out pane, so everything that rearranges the wall belongs to the
      window that still has one. */
   body.solo .sidebar,
-  body.solo .plan-pane,
   body.solo #layouts,
   body.solo #btnPop{display:none}
   body.solo .term.grid{padding:0}
@@ -533,7 +522,7 @@
           </button>
         </div>
         <button class="attach" id="btnAttach" title="Upload an image or file into this session (or paste / drop it)">&#8613; Attach</button>
-        <button class="attach" id="btnPlan" title="Show the visual plan for this session" style="display:none">&#9635; Plan</button>
+        <button class="attach" id="btnPlan" title="Open this session's plan or file in your browser" style="display:none">&#9635; Plan</button>
         <button class="attach" id="btnPop" title="Open the focused session in its own window (&#8984;&#8679;O)">&#8599; Pop out</button>
         <span class="chip" id="termChip">&#9679; idle</span>
       </div>
@@ -541,16 +530,6 @@
         <div class="placeholder" id="termPlaceholder">No session &mdash; create one to begin.</div>
       </div>
     </div>
-
-    <!-- visual plan, opened beside the terminal -->
-    <aside class="plan-pane" id="planPane">
-      <div class="plan-head">
-        <div class="plan-tabs" id="planTabs"></div>
-        <button class="plan-btn" id="planPop" title="Open in your browser">&#8599;</button>
-        <button class="plan-btn" id="planClose" title="Hide the panel">&#10005;</button>
-      </div>
-      <iframe class="plan-frame" id="planFrame" title="Preview"></iframe>
-    </aside>
 
     <div id="mcOverlay">
       <div class="mc-head">
@@ -571,6 +550,15 @@
   <button id="ctxBring"><span class="k">&#8595;</span> Bring to Mac</button>
   <div class="sep"></div>
   <button id="ctxClose" class="danger"><span class="k">&#10005;</span> Close session</button>
+</div>
+
+<!-- which agent "+ New" starts. Same clothes as the right-click menu. -->
+<div class="ctx" id="agentMenu">
+  <div class="head" id="agentMenuWhere">on this Mac</div>
+  <button data-agent="claude"><span class="k">&#9679;</span> New Claude session</button>
+  <button data-agent="codex"><span class="k">&#9679;</span> New Codex session</button>
+  <div class="sep"></div>
+  <button data-plain="1"><span class="k">&#8250;</span> Plain shell</button>
 </div>
 
 <!-- confirm dialog -->
@@ -624,7 +612,12 @@
       <label for="wtCount">Sessions</label>
       <input type="number" id="wtCount" min="1" max="10" value="2">
     </div>
-    <label class="wt-check"><input type="checkbox" id="wtAuto"> Run claude in each session</label>
+    <label class="wt-check"><input type="checkbox" id="wtAuto"> Run
+      <select id="wtAgent" class="wt-agent">
+        <option value="claude">Claude</option>
+        <option value="codex">Codex</option>
+      </select>
+      in each session</label>
     <div class="wt-stale" id="wtStale" style="display:none"></div>
     <div class="modal-actions">
       <button class="btn-cancel" id="wtCancel">Cancel</button>
@@ -972,12 +965,15 @@
       fontFamily: TERM_FONT,
       theme: TERM_THEME,
       allowProposedApi: true,
+      // Without this, xterm's shouldForceSelection() is `altKey && this option`
+      // - so on a Mac it is ALWAYS false and, whenever the application has
+      // mouse reporting on, no gesture on earth can select text in the pane.
+      macOptionClickForcesSelection: true,
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
-    // URLs in the output become clickable, and open in the preview panel rather
-    // than the browser - the point is to see what a session is building without
-    // leaving it. The panel's arrow button kicks the current tab out to Safari.
+    // URLs in the output become clickable, and open in your browser - the app
+    // has no web view of its own to put them in, deliberately.
     try {
       term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => openLink(uri)));
     } catch {}
@@ -989,10 +985,151 @@
     // user gesture that is still live during the event, and a timer would have
     // dropped it. mouseup is also exactly the end of the drag, and it covers
     // double-click (word) and triple-click (line) for free.
-    container.addEventListener('mouseup', () => {
-      const text = term.getSelection();
-      if (text) copyText(text);
+    //
+    // The release is caught on the DOCUMENT as well as on the container, and
+    // that second listener is the whole point. Any selection longer than the
+    // viewport ends with the pointer OUTSIDE the terminal - xterm auto-scrolls
+    // while you drag past the edge, so you let go over the sidebar, the header,
+    // or off the window. A container-only mouseup never fires for those, which
+    // made copy look like it "randomly stops working" when the truth was that
+    // it only ever worked for selections that began and ended on screen.
+    //
+    // `dragFrom` keeps it honest in both directions: only a drag that STARTED
+    // in this pane copies (so releasing over one terminal cannot copy out of
+    // another), and whichever listener fires first clears the flag, so the
+    // container and document handlers never copy the same selection twice.
+    //
+    // The selection is also REMEMBERED as it is made, because xterm's own
+    // selection does not survive a repaint - and a repaint is not rare. Every
+    // fresh stream connection sends a `replay`, which calls term.reset() and
+    // takes the highlight with it. Local panes hardly ever see one; a vps:
+    // pane rides a relay to the box that reconnects on its own several times a
+    // day, plus any desync or grid rearrangement. So on VPS sessions the
+    // highlight could be wiped between the drag and the release, and the copy
+    // then found nothing and said nothing - "sometimes it works, sometimes it
+    // doesn't, especially on the VPS".
+    //
+    // `lastSel` is cleared on mousedown, so it only ever holds selections from
+    // the drag in progress; taking the LONGER of the live and remembered text
+    // is therefore always this drag's fullest selection, never a stale one - it
+    // matters because a reset mid-drag leaves xterm re-selecting from scratch
+    // and reporting only the fragment made since.
+    // Both listeners run in the CAPTURE phase, and that is not a detail. An
+    // application that turns on mouse reporting - which Claude Code does, to
+    // get wheel and click - makes xterm forward mouse events to the shell and
+    // cancel them: preventDefault AND stopPropagation. A bubble-phase listener
+    // on the container is then never called at all, so the copy never ran and
+    // left no trace of having been asked to. Capture fires on the way DOWN,
+    // before xterm can cancel anything, so we always see the drag.
+    //
+    // For the same reason the highlight may not be xterm's. With mouse
+    // reporting on, what you dragged out can be WebKit's own DOM selection over
+    // the rendered rows instead. So the selection is read from three places and
+    // the fullest wins: xterm's live selection, the one remembered from this
+    // drag, and the DOM's - whichever actually holds your text.
+    let dragFrom = false, lastSel = '', lastSelAt = 0;
+    term.onSelectionChange(() => {
+      const t = term.getSelection();
+      if (t) { lastSel = t; lastSelAt = Date.now(); }
     });
+    const domSelection = () => {
+      const sel = window.getSelection && window.getSelection();
+      if (!sel || sel.isCollapsed || !sel.rangeCount) return '';
+      const n = sel.anchorNode;
+      const el = n && (n.nodeType === 1 ? n : n.parentNode);
+      return (el && container.contains(el)) ? (sel.toString() || '') : '';
+    };
+    const bestSelection = () => {
+      let best = '';
+      for (const t of [term.getSelection() || '', lastSel, domSelection()]) {
+        if (t.length > best.length) best = t;
+      }
+      return best;
+    };
+    // What the app's Edit > Copy asks for. Time-limited, unlike bestSelection:
+    // a selection you made and left behind should not still answer for ⌘C
+    // minutes later, when you are somewhere else entirely.
+    const recentSelection = () => term.getSelection() || domSelection()
+                                 || (Date.now() - lastSelAt < 30000 ? lastSel : '');
+    // Claude Code turns mouse reporting ON (tmux confirms it: mouse_any=1,
+    // mouse_sgr=1). xterm then hands every button event to the application and
+    // cancels it, and selecting is only possible when shouldForceSelection()
+    // says so - which on a Mac means Option AND the option enabled above. With
+    // it off, dragging in a Claude pane could not select ANYTHING, by any
+    // gesture. That is the real bug: not the clipboard, not the copy, but that
+    // there was never a selection to copy.
+    //
+    // Turning the option on would leave you holding Option to select, which is
+    // the convention in iTerm but not something worth relearning here. So the
+    // meaning is swapped: a plain drag selects, and Option+drag is what reaches
+    // the application. Done by re-dispatching the event with altKey flipped -
+    // xterm reads it, decides the way we want, and stays untouched.
+    container.addEventListener('mousedown', (e) => {
+      if (!e.__mtsFlipped && e.button === 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        const flipped = new MouseEvent('mousedown', {
+          bubbles: true, cancelable: true, view: window,
+          clientX: e.clientX, clientY: e.clientY,
+          screenX: e.screenX, screenY: e.screenY,
+          button: e.button, buttons: e.buttons,
+          // detail carries the click count, so double-click-for-a-word and
+          // triple-click-for-a-line keep working.
+          detail: e.detail,
+          altKey: !e.altKey, ctrlKey: e.ctrlKey,
+          shiftKey: e.shiftKey, metaKey: e.metaKey,
+        });
+        flipped.__mtsFlipped = true;
+        e.target.dispatchEvent(flipped);
+        return;   // the clone runs this listener again, and does the rest
+      }
+      dragFrom = true; lastSel = ''; lastSelAt = 0;
+      clipLog('mousedown', { sid, forced: !!e.__mtsFlipped });
+    }, true);
+    const copyOnRelease = () => {
+      if (!dragFrom) return;
+      dragFrom = false;
+      const text = bestSelection();
+      clipLog('release', { sid, live: (term.getSelection() || '').length,
+                           remembered: lastSel.length, dom: domSelection().length,
+                           chosen: text.length });
+      if (text) copyText(text);
+    };
+    container.addEventListener('mouseup', copyOnRelease, true);
+    document.addEventListener('mouseup', copyOnRelease, true);
+
+    // A scroll must never become a keystroke. An application that turns mouse
+    // reporting on - Claude Code does - is handed the wheel and scrolls itself.
+    // Codex does NOT, so xterm handles the wheel, and when the pane has nothing
+    // above the viewport yet xterm's fallback turns every wheel notch into a
+    // cursor key and SENDS it to the shell. In Codex that walks the composer
+    // back through your old prompts: you scroll up to re-read the conversation
+    // and instead a message from three days ago lands in the box you were
+    // typing in, on top of your draft. It reads as "scrolling brings up old
+    // messages", and no amount of scrolling ever shows the conversation.
+    //
+    // So: a wheel event over a pane that cannot scroll is swallowed here, before
+    // xterm can see it. Once the session has produced enough output to have a
+    // scrollback, the viewport scrolls and the event goes through untouched.
+    // Capture phase, like the copy handlers above, because xterm cancels what it
+    // takes; passive:false because a swallow means preventDefault.
+    container.addEventListener('wheel', ev => {
+      try {
+        // The application asked for mouse events - they are its business, not ours.
+        if (term.modes && term.modes.mouseTrackingMode !== 'none') return;
+        // On the ALTERNATE screen a full-screen app owns the view - Codex's
+        // transcript (Ctrl+T), less, vim - and the very same cursor-key fallback
+        // is how you scroll them: Codex's transcript prints "↑/↓ to scroll" at
+        // the bottom of it. So there the wheel is exactly right, and passing it
+        // through is what makes scrolling a Codex conversation work at all.
+        const buf = term.buffer && term.buffer.active;
+        if (buf && buf.type === 'alternate') return;
+      } catch {}
+      const vp = container.querySelector('.xterm-viewport');
+      if (vp && vp.scrollHeight - vp.clientHeight > 1) return;   // there is room to scroll
+      ev.preventDefault();
+      ev.stopPropagation();
+    }, { capture: true, passive: false });
 
     // ⌘C with a selection is Copy. Without one it is left alone, so ⌘C stays
     // whatever the shell makes of it (Claude Code's interrupt, mostly).
@@ -1000,15 +1137,23 @@
     term.attachCustomKeyEventHandler(ev => {
       if (ev.type !== 'keydown') return true;
       const combo = ev.metaKey || (ev.ctrlKey && ev.shiftKey);
-      if (combo && (ev.key === 'c' || ev.key === 'C') && term.hasSelection()) {
-        ev.preventDefault();
-        copyText(term.getSelection());
-        return false;
+      if (combo && (ev.key === 'c' || ev.key === 'C')) {
+        // A selection a repaint has just wiped is still yours for a moment.
+        // Safe to honour: this is ⌘C / Ctrl+Shift+C, never the bare Ctrl+C
+        // that interrupts, so nothing is taken away from the shell.
+        const text = term.hasSelection() ? term.getSelection()
+                   : (Date.now() - lastSelAt < 30000 ? lastSel : '');
+        if (text) {
+          ev.preventDefault();
+          copyText(text);
+          return false;
+        }
       }
       return true;
     });
 
-    const pane = { term, fit, container, abort: null, connected: false, name, exited: false };
+    const pane = { term, fit, container, abort: null, connected: false, name,
+                   exited: false, copyOnRelease, recentSelection };
     panes[sid] = pane;
 
     // Input goes out on the leading edge: the first keystroke is sent on its
@@ -1098,8 +1243,8 @@
   //
   // The id says which reports are ours, so resizing ourselves replaces our last
   // report instead of competing with it. Without it, narrowing the terminal and
-  // widening it again - opening the preview panel does exactly that - leaves the
-  // window pinned at the narrow width.
+  // widening it again - a layout change or a pop-out does exactly that - leaves
+  // the window pinned at the narrow width.
   //
   // The heartbeat below is the other half: the server only re-evaluates when a
   // report arrives, so with nothing reporting, whatever width it last settled on
@@ -1376,6 +1521,9 @@
     const pane = panes[sid];
     if (!pane) return;
     pane.closing = true;   // keeps it out of streamSids before the stream reopens
+    // The copy-on-release listener lives on the document, so it outlives the
+    // container unless it is taken off by hand.
+    if (pane.copyOnRelease) document.removeEventListener('mouseup', pane.copyOnRelease, true);
     try { pane.term.dispose(); } catch {}
     if (pane.container.parentNode) pane.container.parentNode.removeChild(pane.container);
     delete panes[sid];
@@ -1662,8 +1810,9 @@
     chipEl.innerHTML = '<span style="color:' + stateColor(st) + '">&#9679;</span> ' + label;
   }
 
-  // ── preview panel ────────────────────────────────────────────────────────
-  // One tabbed panel beside the terminal for anything a session produces:
+  // ── what a session produces → your browser ────────────────────────
+  // Three things a session can hand you, and all three open in your real
+  // browser - never inside the app:
   //
   //   plan  /farm writes plans/<slug>/plan.html, then shared/term-plan stamps
   //         "<nonce>:<path>" onto the session's tmux @webplan option
@@ -1671,19 +1820,21 @@
   //   link  a URL in the output, clicked (xterm's web-links addon)
   //
   // The two stamps arrive on the states poll, which is the only signal that
-  // either is ready. The app had both available and did nothing with them, so
-  // plans and artefacts were being produced and were unreachable from here.
-  // The nonce is what makes re-stamping the same path re-open it.
-  const planPane  = document.getElementById('planPane');
-  const planFrame = document.getElementById('planFrame');
-  const planTabs  = document.getElementById('planTabs');
-  const btnPlan   = document.getElementById('btnPlan');
+  // either is ready. The nonce is what makes re-stamping the same path count as
+  // something new to open.
+  //
+  // This used to open in an iframe panel beside the terminal, and an iframe was
+  // the wrong place for all of it. Half the web refuses to be framed and the
+  // panel renders that refusal as permanent blankness; a visual plan is a
+  // full-width document that wants a window; and nothing in a frame can be
+  // scrolled away from the terminal, kept open while you work, bookmarked,
+  // printed or dropped in a message. A browser does every one of those already,
+  // so it is the browser's job.
+  const btnPlan = document.getElementById('btnPlan');
 
   let plans = {}, files = {};   // sid -> "<nonce>:<path>", straight from the poll
   let stampSeen = {};           // "<kind>:<sid>" -> the stamp already acted on
   let stampPrimed = false;      // has the first poll been recorded yet?
-  let tabs = [];                // [{id, title, url}] - shared across sessions
-  let tabActive = null;
 
   function splitStamp(raw) {
     const i = (raw || '').indexOf(':');
@@ -1691,8 +1842,8 @@
                     : { nonce: raw.slice(0, i), path: raw.slice(i + 1) };
   }
 
-  /// The nonce rides in the URL so a re-stamp reloads the frame while an
-  /// unchanged one does not.
+  /// The nonce rides in the URL so a re-stamp is a fresh page rather than one
+  /// the browser serves from its cache.
   function stampUrl(endpoint, sid, raw) {
     const { nonce, path } = splitStamp(raw);
     if (!path) return '';
@@ -1706,74 +1857,31 @@
   const planName = p => p.replace(/^plans\//, '').replace(/\/[^/]*\.html$/, '');
   const fileName = p => p.split('/').pop() || p;
 
-  /// Opening or closing the preview panel changes the width of every pane, not
-  /// just the focused one, so the whole wall re-fits.
-  function refitActive() {
-    requestAnimationFrame(refitAll);
-  }
-
-  function openTab(id, title, url) {
-    if (!url) return;
-    const existing = tabs.find(t => t.id === id);
-    if (existing) { existing.title = title; existing.url = url; }
-    else tabs.push({ id, title, url });
-    tabActive = id;
-    planPane.classList.add('open');
-    renderTabs();
-    showTab();
-    refitActive();
-  }
-
-  function closeTab(id) {
-    const i = tabs.findIndex(t => t.id === id);
-    if (i === -1) return;
-    tabs.splice(i, 1);
-    if (!tabs.length) { hidePreview(); tabActive = null; planTabs.innerHTML = ''; return; }
-    if (tabActive === id) tabActive = tabs[Math.min(i, tabs.length - 1)].id;
-    renderTabs();
-    showTab();
-  }
-
-  function hidePreview() {
-    planPane.classList.remove('open');
-    planFrame.setAttribute('src', 'about:blank');
-    refitActive();
-  }
-
-  function showTab() {
-    const t = tabs.find(x => x.id === tabActive);
-    if (!t) return;
-    if (planFrame.getAttribute('src') !== t.url) planFrame.setAttribute('src', t.url);
-  }
-
-  function renderTabs() {
-    planTabs.innerHTML = '';
-    for (const t of tabs) {
-      const b = document.createElement('button');
-      b.className = 'ptab' + (t.id === tabActive ? ' active' : '');
-      b.title = t.title;
-      const l = document.createElement('span');
-      l.className = 'ptab-label';
-      l.textContent = t.title;
-      const x = document.createElement('span');
-      x.className = 'ptab-x';
-      x.innerHTML = '&#10005;';
-      x.addEventListener('click', ev => { ev.stopPropagation(); closeTab(t.id); });
-      b.appendChild(l); b.appendChild(x);
-      b.addEventListener('click', () => { tabActive = t.id; renderTabs(); showTab(); });
-      planTabs.appendChild(b);
-    }
+  /// Hand a URL to the default browser.
+  ///
+  /// Through the bridge whenever there is one, because WebKit only lets
+  /// `window.open` through while a user gesture is live: a plan that lands
+  /// while you are reading the terminal has no gesture behind it, and that call
+  /// would be swallowed without a sound. The bridge has no such rule - it is
+  /// NSWorkspace on the other side - so it works for a click and for something
+  /// that simply finished. Outside the app (this page in a plain browser) there
+  /// is no bridge, and `window.open` is exactly right.
+  function openExternal(url, note) {
+    let abs = url;
+    try { abs = new URL(url, location.href).href; } catch {}
+    const bridge = window.webkit && window.webkit.messageHandlers
+                && window.webkit.messageHandlers.mts;
+    if (bridge) bridge.postMessage({ cmd: 'openExternal', url: abs });
+    else if (!window.open(abs, '_blank')) { toast('Your browser blocked that window'); return; }
+    if (note) toast(note);
   }
 
   /// A term-link URL points at the box's dashboard, whose file endpoint wants a
-  /// token this page does not have and should not carry. Route those through
-  /// our own proxy, which holds it; anything else loads as it stands.
+  /// token neither this page nor your browser has. Route those through this
+  /// server's own proxy, which holds it; anything else opens as it stands.
   function previewUrlFor(raw) {
     try {
       const u = new URL(raw, location.href);
-      // Something the box produced: fetched through this server's proxy, which
-      // also keeps its token out of the page - and makes it same-origin, so the
-      // panel can show it.
       if (vpsInfo.host && u.host === vpsInfo.host
           && (u.pathname === '/api/terminal/file' || u.pathname === '/api/terminal/plan')) {
         return u.pathname + '?host=vps&path='
@@ -1783,61 +1891,19 @@
     } catch { return raw; }
   }
 
-  /// Can the preview panel actually show this, or does it belong in a browser?
-  ///
-  /// The panel is an iframe, and the wider web declines to be framed. An
-  /// artifact answers with `x-frame-options: SAMEORIGIN`, a news site with
-  /// `DENY`, and the browser throws the response away - so clicking a link left
-  /// the panel open and permanently blank, which is not a loading problem, it
-  /// is a refusal. Nor can it be detected and recovered from: to script, a
-  /// refused cross-origin load and a perfectly good one look identical. So this
-  /// is decided by where the link points, not by trying it and hoping.
-  ///
-  /// What the panel is FOR still goes in it: what a session is building. That
-  /// is this server's own artifacts and plans (including the box's, proxied
-  /// above), and a dev server a session started on loopback - `ready on :3000`
-  /// is exactly the thing you want beside the terminal rather than in Safari.
-  /// Everything else opens where it works.
-  function framesHere(u) {
-    if (u.origin === location.origin) return true;
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
-    const h = u.hostname;
-    return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]';
-  }
-
   function openLink(raw) {
-    const url = previewUrlFor(raw);
-    let target = null;
-    try { target = new URL(url, location.href); } catch {}
-
-    if (!target || !framesHere(target)) {
-      // In the .app this reaches the WKUIDelegate, which hands it to your
-      // default browser and declines to open a second web view.
-      // Deliberately the same call the panel's pop-out button makes, feature
-      // string and all: that one is known to reach the delegate, and a
-      // 'noopener' hint is enough for WebKit to route a new window elsewhere.
-      window.open(raw, '_blank');
-      toast('Opened in your browser');
-      return;
-    }
-
-    let label = raw;
-    try {
-      label = decodeURIComponent((target.searchParams.get('path') || target.pathname)
-                                 .split('/').pop() || '') || target.host;
-    } catch {}
-    openTab('link:' + raw, label, url);
+    openExternal(previewUrlFor(raw), 'Opened in your browser');
   }
 
-  /// Called on every states poll. Only a stamp that CHANGES opens a tab, and
+  /// Called on every states poll. Only a stamp that CHANGES opens anything, and
   /// only for the session being watched, so something landing in a background
-  /// session never yanks the panel away from what is in front of you.
+  /// session never throws a window at you.
   ///
   /// The first poll only records what it finds, or everything stamped days ago
-  /// would pop open on launch. It records the empty stamps too: a session with
+  /// would open on launch. It records the empty stamps too: a session with
   /// nothing yet is precisely the one about to produce its first, and skipping
-  /// those made that first one look already-seen - which left the panel shut
-  /// for the case that matters most.
+  /// those made that first one look already-seen - which lost the case that
+  /// matters most.
   function syncStamps() {
     const sweep = (map, kind, url, name) => {
       for (const sid in map) {
@@ -1846,7 +1912,9 @@
         if (!stampPrimed) { stampSeen[key] = stamp; continue; }
         if (stampSeen[key] === stamp) continue;
         stampSeen[key] = stamp;
-        if (stamp && sid === activeSid) openTab(key, name(splitStamp(stamp).path), url(sid));
+        if (stamp && sid === activeSid) {
+          openExternal(url(sid), name(splitStamp(stamp).path) + ' - opened in your browser');
+        }
       }
     };
     sweep(plans, 'plan', planUrl, planName);
@@ -1856,23 +1924,15 @@
   }
 
   /// The button is only worth showing when this session has actually made
-  /// something, or when there is a panel to bring back.
+  /// something - it is how you get back to a plan you have closed.
   function planOnSwitch() {
     const has = splitStamp(plans[activeSid]).path || splitStamp(files[activeSid]).path;
-    btnPlan.style.display = (has || tabs.length) ? '' : 'none';
+    btnPlan.style.display = has ? '' : 'none';
   }
 
   btnPlan.addEventListener('click', () => {
-    if (planPane.classList.contains('open')) { hidePreview(); return; }
-    const p = planUrl(activeSid), f = fileUrl(activeSid);
-    if (p) openTab('plan:' + activeSid, planName(splitStamp(plans[activeSid]).path), p);
-    else if (f) openTab('file:' + activeSid, fileName(splitStamp(files[activeSid]).path), f);
-    else if (tabs.length) { planPane.classList.add('open'); renderTabs(); showTab(); refitActive(); }
-  });
-  document.getElementById('planClose').addEventListener('click', hidePreview);
-  document.getElementById('planPop').addEventListener('click', () => {
-    const t = tabs.find(x => x.id === tabActive);
-    if (t) window.open(t.url, '_blank');
+    const p = planUrl(activeSid) || fileUrl(activeSid);
+    if (p) openExternal(p, 'Opened in your browser');
   });
 
   // Mission Control (agent dashboard) - opens localhost:4820 in an overlay
@@ -1891,7 +1951,7 @@
     window.addEventListener('message', ev => {
       const d = ev.data || {};
       if (!d || d.source !== 'mission-control') return;
-      if (d.type === 'open-terminal') { close(); try { newSession(d.host || 'vps', false); } catch (e) {} }
+      if (d.type === 'open-terminal') { close(); try { newSession(d.host || 'vps', false, 'claude'); } catch (e) {} }
       else if (d.type === 'close') { close(); }
     });
   })();
@@ -2060,6 +2120,10 @@
 
     row.appendChild(dot); row.appendChild(nm);
 
+    // Which agent, shown only when it is not the default - a rail where every
+    // row said "claude" would be saying nothing at all.
+    const agent = s.agent && s.agent !== 'claude' ? s.agent : '';
+
     // Where the session is showing, if anywhere. With four panes on screen the
     // list is no longer a list of one open session and several closed ones, so
     // it has to say which pane you are looking at it in.
@@ -2070,9 +2134,12 @@
       row.appendChild(where);
     }
 
+    // The agent takes the id's place rather than sitting next to it: three tags
+    // and a 216px rail leave the name as one ellipsis, and the id is a
+    // cross-reference to the :3333 dashboard - which only ever runs Claude.
     const tag = document.createElement('span');
-    tag.className = 'stag';
-    tag.textContent = (s.realid || s.id).slice(0, 4);
+    tag.className = agent ? 'sagent' : 'stag';
+    tag.textContent = agent || (s.realid || s.id).slice(0, 4);
 
     row.appendChild(tag);
 
@@ -2220,6 +2287,16 @@
     } catch (e) {}
   }
   function wtHostOf(g) { return (g && g.host) === 'vps' ? 'vps' : 'local'; }
+  // The agent a group is running, read off its sessions - only autostarted ones
+  // carry the stamp, so a group of plain shells answers '' and the server falls
+  // back to its own default.
+  function wtAgentOf(g) {
+    for (const sid of (g && g.sessions) || []) {
+      const s = sessions.find(x => x.id === sid);
+      if (s && s.agent) return s.agent;
+    }
+    return '';
+  }
   function wtMaxFor(h) { return wtHostInfo(h).max_sessions || 6; }
 
   // Deliberately does not ask for dirty: that costs a `git status` per worktree
@@ -2437,7 +2514,10 @@
     try {
       const r = await fetch('/api/terminal/worktree/add-session', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, host: wtHostOf(g), autostart: !plain })
+        // Whatever the group is already running: a worktree where session 3
+        // answers to a different agent than sessions 1 and 2 is a trap.
+        body: JSON.stringify({ id, host: wtHostOf(g), autostart: !plain,
+                               agent: wtAgentOf(g) || undefined })
       });
       const j = await r.json();
       if (!j.ok) { toast(j.error || 'Could not add a session'); return; }
@@ -2501,6 +2581,7 @@
   const wtBaseEl   = document.getElementById('wtBase');
   const wtCountEl  = document.getElementById('wtCount');
   const wtAutoEl   = document.getElementById('wtAuto');
+  const wtAgentEl  = document.getElementById('wtAgent');
   const wtGoEl     = document.getElementById('wtGo');
   const wtWarnEl   = document.getElementById('wtWarn');
   const wtFolderEl = document.getElementById('wtFolder');
@@ -2614,6 +2695,7 @@
     // On by default: a worktree is made to be worked in, and every one of them so
     // far has ended with someone typing `claude` in each shell by hand.
     wtAutoEl.checked = loadPref('wtAuto', true) !== false;
+    wtAgentEl.value = loadPref('wtAgent', 'claude') === 'codex' ? 'codex' : 'claude';
 
     // The VPS option is only real when a box is connected, reachable, and new
     // enough to know what a worktree is. Otherwise it says which of those it is
@@ -2659,6 +2741,7 @@
       base: (wtBaseEl.value || '').trim() || 'HEAD',
       count: Number(wtCountEl.value) || 1,
       autostart: wtAutoEl.checked,
+      agent: wtAgentEl.value,
     };
     const was = wtGoEl.textContent;
     wtGoEl.disabled = true;
@@ -2817,6 +2900,7 @@
   });
 
   wtAutoEl.addEventListener('change', () => savePref('wtAuto', wtAutoEl.checked));
+  wtAgentEl.addEventListener('change', () => savePref('wtAgent', wtAgentEl.value));
   wtRepoSelEl.addEventListener('change', wtApplyRepo);
 
   // The two buttons light up only when the field still says what they say - type
@@ -2944,9 +3028,12 @@
       sessListEl.appendChild(sectionHeader('VPS', {
         host: vpsInfo.host || '',
         note: note,
-        onAdd: ev => newSession('vps', !!(ev && ev.altKey)),
+        onAdd: ev => {
+          if (ev && ev.altKey) { newSession('vps', true); return; }
+          openAgentMenu(ev.currentTarget, 'vps');
+        },
         addDisabled: !vpsInfo.online,
-        addTitle: 'New VPS session with claude running - alt-click for a plain shell',
+        addTitle: 'New VPS session - pick Claude or Codex; alt-click for a plain shell',
       }));
       for (const s of vpsSessions) {
         if (wtSids.has(s.id)) continue;   // drawn under its worktree, below
@@ -3243,25 +3330,111 @@
     return ok;
   }
 
+  // ── copy tracing ──────────────────────────────────────────────────────────
+  // Every step of a copy attempt, to ~/Library/Logs/mattdaemon-clip.log. A copy
+  // that goes wrong destroys its own evidence - the toast fades, the console
+  // goes with the window - and "it still does not work" is not something you
+  // can debug twice from the outside. sendBeacon because a copy happens inside
+  // a mouseup: it must not add a request the gesture waits on.
+  function clipLog(step, extra) {
+    try {
+      const body = JSON.stringify(Object.assign(
+        { step, where: window.location.search || '/', ua: 'app:' + !!clipBridge() },
+        extra || {}));
+      if (navigator.sendBeacon) navigator.sendBeacon('/api/terminal/clipdebug', body);
+      else fetch('/api/terminal/clipdebug', { method: 'POST', body });
+    } catch (e) {}
+  }
+
+  // The native bridge answers on window.__mtsCopied. One copy is in flight at a
+  // time - a second selection supersedes the first, and the one being replaced
+  // is simply dropped rather than left to time out into a false failure.
+  let pendingCopy = null;
+
+  window.__mtsCopied = function (ok) {
+    clipLog('native-answered', { ok: !!ok, pending: !!pendingCopy });
+    const p = pendingCopy;
+    if (!p) return;
+    pendingCopy = null;
+    clearTimeout(p.timer);
+    if (ok) p.said();
+    else p.fallback();          // the pasteboard refused it - try our own routes
+  };
+
+  // ⌘C in the .app never reaches this page. AppKit dispatches a menu key
+  // equivalent BEFORE the key event reaches the web view, so Edit > Copy fires
+  // first and WebKit copies its own DOM selection - which, for a terminal, is
+  // empty, because the highlight belongs to xterm. The pasteboard gets cleared
+  // and the text you had just copied is gone. That is the "it says it copied
+  // and then there is nothing to paste" report: the copy worked, and ⌘C wiped
+  // it a second later.
+  //
+  // So the app now routes Edit > Copy here first. True means we handled it;
+  // false sends it back down the responder chain, so ⌘C still copies normally
+  // from a real text field like the settings panel.
+  window.__mtsCopySelection = function () {
+    const order = [activeSid, ...Object.keys(panes)];
+    const seen = new Set();
+    for (const sid of order) {
+      if (!sid || seen.has(sid)) continue;
+      seen.add(sid);
+      const p = panes[sid];
+      if (!p || !p.recentSelection) continue;
+      const text = p.recentSelection();
+      clipLog('cmd-c', { sid, chars: text.length });
+      if (text) { copyText(text); return true; }
+    }
+    return false;
+  };
+
   function copyText(text) {
     if (!text) return;
     const n = text.length;
     const said = () => toast('Copied ' + n + ' character' + (n === 1 ? '' : 's'));
 
-    const bridge = clipBridge();
-    if (bridge) { bridge.postMessage({ cmd: 'copy', text: text }); said(); return; }
+    // Route 2 and 3, also used as the bridge's fallback. Kept in a closure so
+    // the answer from native can reach for it later, outside the original event.
+    const webRoutes = () => {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(
+          () => { clipLog('web-clipboard-ok'); said(); }, () => {
+          clipLog('web-clipboard-refused');
+          // Rejected (no gesture, or the permission was refused) - the textarea
+          // still works from inside the same event, so try it before giving up.
+          if (clipViaTextarea(text)) said();
+          else toast('Could not copy - nothing would take it');
+        });
+        return;
+      }
+      if (clipViaTextarea(text)) said();
+      else toast('Could not copy - nothing would take it');
+    };
 
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(said, () => {
-        // Rejected (no gesture, or the permission was refused) - the textarea
-        // still works from inside the same event, so try it before giving up.
-        if (clipViaTextarea(text)) said();
-        else toast('Could not copy - the browser blocked it');
-      });
+    clipLog('copyText', { chars: n, bridge: !!clipBridge() });
+    const bridge = clipBridge();
+    if (bridge) {
+      // Say nothing yet. The toast is a claim about the system pasteboard, and
+      // only the native side can see whether the text reached it.
+      if (pendingCopy) clearTimeout(pendingCopy.timer);
+      pendingCopy = {
+        said, fallback: webRoutes,
+        // An app too old to answer, or one that never gets to: don't strand the
+        // copy in silence, take the web routes instead. Generous enough that a
+        // busy main thread does not trip it.
+        timer: setTimeout(() => {
+          clipLog('native-silent'); pendingCopy = null; webRoutes();
+        }, 700),
+      };
+      try {
+        bridge.postMessage({ cmd: 'copy', text: text });
+      } catch (e) {
+        clearTimeout(pendingCopy.timer);
+        pendingCopy = null;
+        webRoutes();
+      }
       return;
     }
-    if (clipViaTextarea(text)) said();
-    else toast('Could not copy - the browser blocked it');
+    webRoutes();
   }
 
   // ── image / file upload: browser -> session (paste, drop, or Attach) ──────
@@ -3431,12 +3604,16 @@
   // host: 'vps' starts the session on the box (via the proxy); anything else
   // starts it locally. The returned id is already namespaced by the server, so
   // switchTo lands on the right pane either way.
-  // A new terminal starts claude, because that is what a new terminal here is
-  // for. Alt-click when you want a plain shell instead - the tooltip says so.
-  async function newSession(host, plain) {
+  // A new terminal starts an agent, because that is what a new terminal here is
+  // for. WHICH agent is the caret's business (below); alt-click when you want a
+  // plain shell instead - the tooltip says so.
+  async function newSession(host, plain, agent) {
     btnNew.disabled = true;
     try {
       const body = { autostart: !plain };
+      // The same choice either way round: the box runs both agents too, and it
+      // answers for a name it does not know rather than starting the wrong one.
+      if (!plain) body.agent = agent || newAgent;
       if (host === 'vps') body.host = 'vps';
       const r = await fetch('/api/terminal/start', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3449,8 +3626,70 @@
       }
     } catch {} finally { btnNew.disabled = false; }
   }
-  btnNew.addEventListener('click', ev => newSession(undefined, ev.altKey));
-  btnNew.title = 'New session with claude running - alt-click for a plain shell';
+  // ── which agent "+ New" starts ───────────────────────────────────────────
+  // The button starts the agent you started last - one click for the thing you
+  // keep doing - and the caret beside it is where you change your mind. The
+  // choice is remembered, so it is a decision you make once and not every time.
+  const agentMenu = document.getElementById('agentMenu');
+  const agentWhereEl = document.getElementById('agentMenuWhere');
+  const AGENT_LABELS = { claude: 'Claude', codex: 'Codex' };
+  let newAgent = AGENT_LABELS[loadPref('newAgent', 'claude')] ? loadPref('newAgent', 'claude')
+                                                             : 'claude';
+
+  // The last agent you picked is marked in the menu, and that is ALL it does:
+  // the menu opens on every new session, on both machines, so which agent runs
+  // is a decision you make each time rather than one the button remembers.
+  function paintAgent() {
+    agentMenu.querySelectorAll('button[data-agent]').forEach(b => {
+      b.classList.toggle('on', b.dataset.agent === newAgent);
+    });
+  }
+  paintAgent();
+
+  // Which machine the menu will start the session on. Set on every open, so a
+  // menu left over from the VPS "+" can never open a session on the wrong box.
+  let agentMenuHost = 'local';
+
+  function closeAgentMenu() { agentMenu.classList.remove('open'); }
+  function openAgentMenu(anchor, host) {
+    if (agentMenu.classList.contains('open')) { closeAgentMenu(); return; }
+    agentMenuHost = host === 'vps' ? 'vps' : 'local';
+    agentWhereEl.textContent = agentMenuHost === 'vps' ? 'on the VPS' : 'on this Mac';
+    const r = anchor.getBoundingClientRect();
+    agentMenu.style.left = r.left + 'px';
+    agentMenu.style.top  = (r.bottom + 4) + 'px';
+    agentMenu.classList.add('open');
+    const m = agentMenu.getBoundingClientRect();
+    if (m.right > window.innerWidth)
+      agentMenu.style.left = Math.max(4, window.innerWidth - m.width - 4) + 'px';
+    if (m.bottom > window.innerHeight)
+      agentMenu.style.top = Math.max(4, r.top - m.height - 4) + 'px';
+  }
+  agentMenu.addEventListener('click', ev => {
+    ev.stopPropagation();
+    const b = ev.target.closest('button');
+    if (!b) return;
+    const host = agentMenuHost === 'vps' ? 'vps' : undefined;
+    closeAgentMenu();
+    if (b.dataset.plain) { newSession(host, true); return; }
+    newAgent = b.dataset.agent;
+    savePref('newAgent', newAgent);
+    paintAgent();
+    newSession(host, false, newAgent);
+  });
+  window.addEventListener('click', closeAgentMenu);
+  window.addEventListener('resize', closeAgentMenu);
+  window.addEventListener('blur', closeAgentMenu);
+  document.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') closeAgentMenu();
+  });
+
+  btnNew.addEventListener('click', ev => {
+    ev.stopPropagation();                     // not a dismiss of the menu it opens
+    if (ev.altKey) { newSession(undefined, true); return; }
+    openAgentMenu(btnNew, 'local');
+  });
+  btnNew.title = 'New session - pick Claude or Codex; alt-click for a plain shell';
 
   // Unconditional: the stream that most needs this button is the one still
   // claiming to be connected through a socket that stopped delivering.
@@ -3617,6 +3856,7 @@
     host.classList.add('open');
     const term = new Terminal({
       cursorBlink: true, fontSize: 12, fontFamily: TERM_FONT,
+      macOptionClickForcesSelection: true,
       theme: TERM_THEME, allowProposedApi: true,
     });
     const fit = new FitAddon.FitAddon();

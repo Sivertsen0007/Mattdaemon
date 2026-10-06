@@ -24,7 +24,7 @@ loopback only. Carries nobody's account.
 |---|---|
 | **Start here** | [What it is](#what-it-is) · [Two ways to run it](#two-ways-to-run-it) · [First run](#first-run) |
 | **How it works** | [Architecture](#architecture) · [The four pieces](#the-four-pieces) · [A keystroke's journey](#a-keystrokes-journey) · [Session state](#session-state-what-the-dots-mean) |
-| **Features** | [The window](#the-window) · [Copy and paste](#copy-and-paste) · [Handover: Mac to VPS](#handover-mac-to-vps) · [Handover: VPS to Mac](#handover-vps-to-mac) · [Uploads](#uploads-and-the-preview-panel) |
+| **Features** | [The window](#the-window) · [Copy and paste](#copy-and-paste) · [Handover: Mac to VPS](#handover-mac-to-vps) · [Handover: VPS to Mac](#handover-vps-to-mac) · [Uploads](#uploads) |
 | **Operating it** | [File access, once](#file-access-granted-once-not-every-week) · [Configuration](#configuration) · [Give it to someone else](#give-it-to-someone-else) |
 | **Reference** | [HTTP API](#http-api) · [Constants](#constants-that-matter) · [Repository](#repository-and-git-setup) · [Testing](#testing) · [Troubleshooting](#troubleshooting) · [Design decisions](#design-decisions) |
 
@@ -281,15 +281,15 @@ Two lessons are baked into that logic:
   on a second monitor. Same page, same server, `?solo=<sid>` - no second terminal
   implementation to keep in step. The shell is a tmux session and outlives any window
   onto it, so closing one is not closing the session; the grid takes it back.
-- **Preview panel** - what a session *builds* opens beside it: its artifacts and
-  plans, and a dev server it started on loopback. The point is to see the thing
-  without leaving the terminal.
-- **Links go where they can actually be seen.** The panel is an iframe, and the
-  wider web declines to be framed - an artifact answers with
-  `x-frame-options: SAMEORIGIN`, a news site with `DENY` - so anything off this
-  machine opens in your default browser instead of leaving the panel blank. The
-  rule is by destination, not by trying it: to script, a refused cross-origin load
-  and a good one look identical, so there is nothing to detect and recover from.
+- **What a session builds opens in your browser.** A visual plan from `/farm`, a
+  file shown with `term-show`, a URL printed in the output and clicked: all of it
+  is handed to your default browser, including a plan a VPS session wrote. There
+  is no web view inside the app, on purpose - an iframe cannot show half the web
+  (`x-frame-options` makes a panel that is permanently blank), a plan is a
+  full-width document, and a browser tab can be scrolled, kept, printed and
+  shared while you carry on in the terminal.
+- **The plan button** reopens the latest one for the focused session, for when you
+  have closed the tab. It is hidden until that session has made something.
 - **Right-click a session** - rename, save for later, close, and whichever handover
   direction applies.
 - **Survives sleep.** A Mac waking up leaves a TCP connection that is gone without
@@ -482,7 +482,7 @@ machine's folder layout is nobody else's.
 
 ---
 
-## Uploads and the preview panel
+## Uploads
 
 Paste a screenshot, drop a file from Finder, or press **Attach**: the bytes go to the
 session's `.uploads` directory and the returned path is typed into the prompt, so
@@ -644,7 +644,7 @@ prefix on a session id routes the same call through the proxy to the box instead
 | `GET` | `/api/terminal/stream?sid=` | SSE output for one session. |
 | `GET` | `/api/terminal/stream-multi?sids=a,b,c` | SSE for several, each event tagged with its `sid`. |
 | `GET` | `/api/terminal/file?path=` | Serve a file a session produced (restricted to the working folder). |
-| `GET` | `/api/terminal/plan?path=` | Serve a visual-plan HTML for the side panel (`plans/*.html`). |
+| `GET` | `/api/terminal/plan?path=` | Serve a visual-plan HTML to the browser (`plans/*.html`). |
 | `GET` | `/api/terminal/health` | Timing counters - how the app is behaving, in numbers. |
 | `POST` | `/api/terminal/start` | New session. |
 | `POST` | `/api/terminal/input` | Write to a session. |
@@ -779,7 +779,7 @@ clipboard is the real clipboard, and the repositories are real repositories.
 | Handover: *no local path is mapped for …* | The folder has no entry in `path_map` | Settings → VPS → Folder mapping. Refusing beats dropping the session somewhere unrelated. |
 | Handover: *did not produce a brief within 300s* | The far session is mid-task, waiting on a permission prompt, or its folder is outside what its terminal can serve | Answer the prompt over there and try again. |
 | Handover: *commit never arrived* | The box could not push | Check its git remote and permissions; the brief says what it managed. |
-| A link opened in the browser, and I wanted it in the panel | Only this machine's own pages can be framed | Loopback and this server's artifacts preview in the panel; everything else would be refused by the site itself, so it is handed to the browser. |
+| A plan finished and no browser window appeared | The app is older than the page it is serving | `openExternal` is a bridge command; a build from before it falls back to `window.open`, which WebKit drops without a user gesture. Rebuild: `./macapp/build.sh`. Clicking **Plan** still works meanwhile. |
 | Terminal frozen after the Mac wakes | The SSE relay died with the connection | It reconnects itself within 45 s. |
 | Gatekeeper refuses a copied `.app` | Ad-hoc / self-signed, from another Mac | Right-click → **Open** the first time, or `xattr -dr com.apple.quarantine Mattdaemon.app`. |
 | Second launch does nothing | Single-instance guard | It asks the running copy to show its window instead. If that one lost its window, this is what brings it back. |
