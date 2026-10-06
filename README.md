@@ -278,6 +278,28 @@ cases they exist for. A fresh Mac needs them installed, which is one command:
 | `hooks/webterm-state.sh` | `@webstate` | A session that has stopped and one waiting on a permission box can look identical on screen. |
 | `hooks/webloop-stamp.py` | `@webloop` | A `/loop` between iterations sits at a prompt looking finished. The stamp carries the loop's own next-tick deadline, so a dead loop goes honestly green. |
 
+`webterm-state.sh` also stamps **`@webneed`** - *why* a red session wants you, as
+`kind|epoch|headline`. The rail shows the kind as a chip on the row and the
+sentence as its tooltip, so a plan awaiting your go-ahead is distinguishable
+from a Bash permission without opening the session:
+
+| Kind | Stamped on | Headline |
+|---|---|---|
+| `plan` | `PreToolUse` with `ExitPlanMode` | "plan ready for your go-ahead" |
+| `approval` | `PermissionRequest` | the Bash command, or the file being edited |
+| `question` | `PreToolUse` with `AskUserQuestion`, or a Notification | the question itself |
+
+This is the one thing a pane scrape genuinely cannot answer: a plan and a
+permission draw nearly the same box, and the only text available to scrape is
+whatever happened to sit above the options. The hook is handed the tool name and
+its input at the moment the turn stopped, so it knows. `_pane_reason` in
+`terminal_manager.py` stays underneath as the floor, for a session that was
+already waiting before the hook was installed and for an agent that fires no
+hooks at all. The stamp is cleared by `Stop`, `PostToolUse` and any ordinary
+`PreToolUse`, so an answered box leaves nothing behind, and `all_states` only
+answers for sessions the dots already call `attention` - a stale stamp can never
+turn a green row red.
+
 The script copies both into `~/.claude/hooks/`, wires them into the eight events
 `settings.json` needs, and is safe to re-run: it backs the file up, adds only
 what is missing, and leaves your own hooks and settings alone. Restart your
@@ -786,6 +808,8 @@ clipboard is the real clipboard, and the repositories are real repositories.
 | `python3 server.py --selftest-setup` | nothing | 17 checks against a throwaway config (`MTS_CONFIG`): a fresh install needs setup, a shell is refused until it is finished, a bad folder is rejected, a real one takes effect without a restart, a VPS that does not answer is not saved, `complete` refuses without a login, `reset` returns to first-run, and the config is written `0600`. |
 | `python3 server.py --selftest-handover` | git | 20 checks: the path map read backwards (longest prefix wins, unmapped is refused, out-and-back lands where it started), the brief's header, where the box is told to write it, and the git step **against real throwaway repositories** - clean clone fast-forwards and the file appears; dirty clone fetches but does not merge and the user's file is untouched; an unpushed commit is reported rather than waited on for ever. |
 | Playwright pass | Chromium | Opens a session, echoes a token, **drags the mouse across it**, and asserts the *system clipboard* now holds exactly that text - from a clipboard deliberately loaded with something else first, so "it was already there" cannot pass for a copy. Then clears it and proves ⌘C does the same. Also walks the setup card as a new user. |
+| `python3 test_terminal_worktree.py` | git | 74 checks against real throwaway repositories: a worktree group is created on the branch and repo you pick, dispose cannot escape its own folder (`../../repo`, `..`, `/etc` are all refused), your own checkout and its `.env` are never touched, and a disposed worktree's branch survives by default so commits are not binned by a cleanup. |
+| `python3 test_webneed.py` | tmux | 23 checks on the status hook and its reader, end to end: a real tmux server on its own socket, the hook invoked exactly as Claude Code invokes it (event in argv, JSON on stdin), and `all_states` on the other side. Proves `ExitPlanMode` reads as a plan where the pane cannot tell, that a headline carrying pipes or tabs cannot break the field the stamp travels in, that `Stop` / `PostToolUse` clear it, and that a green or yellow session is never asked what it wants. |
 | `swift build -c release` | Xcode CLT | The app compiles with the bridge. macOS only. |
 
 ---

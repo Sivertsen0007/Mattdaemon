@@ -554,6 +554,47 @@ def _trim(text):
     return text[:_MAX_HEADLINE - 1] + "…" if len(text) > _MAX_HEADLINE else text
 
 
+def _parse_webneed(raw):
+    """(kind, headline) from a `kind|epoch|headline` stamp; ("", "") if absent.
+
+    No TTL, unlike @webstate. A `working` stamp has to expire because a session
+    whose agent died mid-turn never fires Stop and would sit yellow for ever.
+    This one is only ever READ for a session the dots already classified as
+    waiting, so a stale stamp cannot strand anything: if nothing is waiting,
+    nobody asks what it wants.
+    """
+    parts = (raw or "").split("|", 2)
+    if len(parts) < 3 or not parts[0].strip():
+        return "", ""
+    return parts[0].strip(), parts[2].strip()
+
+
+def session_need(sid, webneed="", activity="", state=""):
+    """Why a waiting session wants you: {"kind", "headline", "source"}, or None.
+
+    Two sources, and the order is the point. The hook was handed the tool name
+    and its input at the moment the turn stopped, so it can say "plan" where the
+    pane shows the same box as a Bash permission. The pane scrape is the floor
+    underneath it: it answers for a session that was already waiting when the
+    hook was installed, and for an agent that fires no hooks at all.
+
+    Only asked about a session that is actually waiting, so this costs nothing
+    for the green ones, and the pane read it may do is the cached one.
+    """
+    if state not in ("attention",):
+        return None
+    kind, headline = _parse_webneed(webneed)
+    if kind:
+        return {"kind": kind, "headline": headline, "source": "hook"}
+    signals = _pane_signals(sid, activity)
+    if not signals or len(signals) < 4:
+        return None
+    kind, headline = signals[2], signals[3]
+    if not kind and not headline:
+        return None
+    return {"kind": kind or "question", "headline": headline, "source": "pane"}
+
+
 def _pane_reason(raw_tail, low_tail):
     """(kind, headline) for a pane that is waiting on you.
 
@@ -837,13 +878,23 @@ def all_states():
             sessions = list(_last_good_sessions)
     kids = _build_proc_tree()
     _forget_pane_cache({s["id"] for s in sessions})
+    states = {s["id"]: classify_session(s["id"], s.get("loop", ""),
+                                        s.get("cmd", ""),
+                                        s.get("pid", ""), kids,
+                                        s.get("webstate", ""),
+                                        s.get("activity", ""))
+              for s in sessions}
+    # Only the waiting ones are asked what they want, so the green majority adds
+    # no work to a poll that runs every few seconds for every session.
+    needs = {}
+    for sess in sessions:
+        n = session_need(sess["id"], sess.get("webneed", ""),
+                         sess.get("activity", ""), states.get(sess["id"], ""))
+        if n:
+            needs[sess["id"]] = n
     return {"ok": True,
-            "states": {s["id"]: classify_session(s["id"], s.get("loop", ""),
-                                                 s.get("cmd", ""),
-                                                 s.get("pid", ""), kids,
-                                                 s.get("webstate", ""),
-                                                 s.get("activity", ""))
-                       for s in sessions},
+            "states": states,
+            "needs": needs,
             "plans": {s["id"]: s.get("plan", "") for s in sessions},
             "files": {s["id"]: s.get("webfile", "") for s in sessions},
             "loops": {s["id"]: s.get("loop", "") for s in sessions}}

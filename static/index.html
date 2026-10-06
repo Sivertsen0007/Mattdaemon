@@ -470,6 +470,12 @@
   .sess .where{font-size:9px;color:var(--inkDim);border:1px solid var(--border);border-radius:4px;
     padding:1px 4px;letter-spacing:.04em;flex:none;font-family:'JetBrains Mono',monospace}
   .sess.placed .where{color:var(--inkMute);border-color:#33333a}
+  /* WHY a red session wants you. The dot says a session is waiting; this says
+     whether it is a plan to approve, a permission, or a question - which is the
+     difference between "I can answer that from here" and "I need to read it". */
+  .sess .need{font-size:9px;color:var(--stAttention);border:1px solid var(--stAttention);
+    border-radius:4px;padding:1px 4px;letter-spacing:.04em;flex:none;opacity:.85;
+    font-family:'JetBrains Mono',monospace}
   /* Which agent a session is running, shown only when it is not the default -
      a rail where every row said "claude" would say nothing at all. */
   .sess .sagent{font-size:9px;color:var(--inkMute);border:1px solid #33333a;border-radius:4px;
@@ -877,6 +883,7 @@
   const panes = {};
   let sessions = [];      // last /sessions listing (each carries host: 'local'|'vps')
   let states = {};        // last /states  (sid -> working|attention|idle|looping|offline)
+  let needs  = {};        // sid -> {kind, headline, source} for the waiting ones only
   let vpsInfo = { enabled: false, online: false, host: '' };  // from /sessions .vps
 
   // ── the grid ────────────────────────────────────────────────────────────
@@ -1724,6 +1731,9 @@
       const nm = tile.querySelector('.tile-head .nm');
       const s = sessions.find(x => x.id === sid);
       if (nm && s && nm.textContent !== s.name) nm.textContent = s.name;
+      // The border already says this pane wants you; the tooltip says what for.
+      const need = needOf(sid);
+      tile.title = need ? need.tip : '';
     }
   }
 
@@ -1962,6 +1972,18 @@
   function dotClass(sid) {
     return 's-' + (states[sid] || 'idle');
   }
+  /// The one-word kind and the full sentence, for a session that wants you.
+  /// Empty for every other session - the server only answers for the waiting
+  /// ones, so this is absent rather than stale on a green row.
+  function needOf(sid) {
+    const n = needs[sid];
+    if (!n || states[sid] !== 'attention') return null;
+    const kind = n.kind || 'question';
+    const tip = n.headline
+      ? kind.charAt(0).toUpperCase() + kind.slice(1) + ': ' + n.headline
+      : 'Waiting for you';
+    return { kind, tip };
+  }
   function stateColor(st) {
     if (st === 'working' || st === 'looping') return 'var(--stWorking)';
     if (st === 'attention') return 'var(--stAttention)';
@@ -2119,6 +2141,17 @@
     nm.textContent = s.name;
 
     row.appendChild(dot); row.appendChild(nm);
+
+    // Why it is red, when we know. The chip carries the kind because that is
+    // what fits; the sentence goes in the tooltip, where length costs nothing.
+    const need = needOf(s.id);
+    if (need) {
+      const chip = document.createElement('span');
+      chip.className = 'need';
+      chip.textContent = need.kind;
+      row.appendChild(chip);
+      row.title = need.tip;
+    }
 
     // Which agent, shown only when it is not the default - a rail where every
     // row said "claude" would be saying nothing at all.
@@ -3592,6 +3625,7 @@
       const j = await r.json();
       if (j.ok) {
         states = j.states || {};
+        needs  = j.needs  || {};
         plans  = j.plans  || {};
         files  = j.files  || {};
       }
