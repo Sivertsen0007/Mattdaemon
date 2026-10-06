@@ -23,7 +23,7 @@ loopback only. Carries nobody's account.
 | | |
 |---|---|
 | **Start here** | [What it is](#what-it-is) · [Two ways to run it](#two-ways-to-run-it) · [First run](#first-run) |
-| **How it works** | [Architecture](#architecture) · [The four pieces](#the-four-pieces) · [A keystroke's journey](#a-keystrokes-journey) · [Session state](#session-state-what-the-dots-mean) |
+| **How it works** | [Architecture](#architecture) · [The four pieces](#the-four-pieces) · [A keystroke's journey](#a-keystrokes-journey) · [Session state](#session-state-what-the-dots-mean) · [Status hooks](#the-hooks-that-make-the-dots-honest) |
 | **Features** | [The window](#the-window) · [Copy and paste](#copy-and-paste) · [Handover: Mac to VPS](#handover-mac-to-vps) · [Handover: VPS to Mac](#handover-vps-to-mac) · [Uploads](#uploads) |
 | **Operating it** | [File access, once](#file-access-granted-once-not-every-week) · [Configuration](#configuration) · [Give it to someone else](#give-it-to-someone-else) |
 | **Reference** | [HTTP API](#http-api) · [Constants](#constants-that-matter) · [Repository](#repository-and-git-setup) · [Testing](#testing) · [Troubleshooting](#troubleshooting) · [Design decisions](#design-decisions) |
@@ -262,6 +262,27 @@ Two lessons are baked into that logic:
 - **Hook stamps expire.** `Stop` does not fire when you interrupt Claude with Esc, so
   a `working` stamp could stick for ever. A stamp older than **90 s** is ignored, and
   the pane-text and process heuristics are the floor underneath it.
+
+### The hooks that make the dots honest
+
+Two of those inputs are not in the app at all - they are Claude Code hooks, and
+without them the dots fall back to screen-scraping and are wrong in exactly the
+cases they exist for. A fresh Mac needs them installed, which is one command:
+
+```bash
+./hooks/install.sh
+```
+
+| Hook | Stamps | Why the pane alone cannot tell you |
+|---|---|---|
+| `hooks/webterm-state.sh` | `@webstate` | A session that has stopped and one waiting on a permission box can look identical on screen. |
+| `hooks/webloop-stamp.py` | `@webloop` | A `/loop` between iterations sits at a prompt looking finished. The stamp carries the loop's own next-tick deadline, so a dead loop goes honestly green. |
+
+The script copies both into `~/.claude/hooks/`, wires them into the eight events
+`settings.json` needs, and is safe to re-run: it backs the file up, adds only
+what is missing, and leaves your own hooks and settings alone. Restart your
+Claude Code sessions afterwards. The VPS has its own copy of the state hook
+(`aihub-web` socket scope, and it owns Telegram pushes); these are the Mac half.
 
 ---
 
