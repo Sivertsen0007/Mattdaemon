@@ -78,10 +78,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
         DispatchQueue.main.async { [weak self] in self?.showWindow() }
     }
 
-    /// A WKWebView with no UI delegate silently drops `window.open`, so the
-    /// plan panel's "open in your browser" button did nothing at all. There is
-    /// no second window to give it, and a plan belongs in a real browser
-    /// anyway, so hand the URL to the default one and decline the new view.
+    /// A WKWebView with no UI delegate silently drops `window.open`, which is
+    /// how the page opens anything a session produces. There is no second web
+    /// view to give it - what a session makes belongs in a real browser - so
+    /// hand the URL to the default one and decline the new view. The bridge's
+    /// openExternal covers the same ground for anything without a click behind
+    /// it; this covers plain window.open, including from a popped-out window.
     func webView(_ webView: WKWebView,
                  createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction,
@@ -143,6 +145,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
     //     when this bridge is absent (i.e. in a plain browser).
     //   popOut     - a session gets its own real window.
     //   copy       - text onto the system pasteboard.
+    //   openExternal - a URL into the default browser. The page cannot do this
+    //     itself: WebKit only honours window.open while a user gesture is live,
+    //     so a plan that finished on its own would be dropped in silence.
     //
     // Everything here is best-effort and one-way: an unknown command is logged
     // and ignored, so a newer page against an older app degrades rather than
@@ -161,18 +166,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
             popOut(sid: sid,
                    path: body["url"] as? String ?? "/?solo=\(sid)",
                    title: body["title"] as? String ?? sid)
+        case "openExternal":
+            guard let raw = body["url"] as? String, let url = URL(string: raw),
+                  url.scheme == "http" || url.scheme == "https" else { return }
+            NSWorkspace.shared.open(url)
         case "copy":
             // The terminal's selection is xterm's own, not a DOM selection, so
             // WebKit's Copy has nothing to put on the pasteboard. The page
             // hands us the text instead and we write it ourselves - no user
-            // gesture to lose, nothing to half-succeed.
-            guard let text = body["text"] as? String, !text.isEmpty else { return }
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.setString(text, forType: .string)
+            // gesture to lose.
+            //
+            // And we ANSWER. postMessage is one-way, so the page used to say
+            // "Copied 412 characters" the instant it handed the text over -
+            // true only if this write worked, and the page cannot see the
+            // pasteboard to find out. A write that quietly did not land was
+            // therefore indistinguishable from one that did: the toast said
+            // yes and ⌘V produced the last thing you copied somewhere else.
+            // Now the page is told, and falls back to its own clipboard routes
+            // when the answer is no.
+            let ok = writeToPasteboard(body["text"] as? String)
+            message.webView?.evaluateJavaScript(
+                "window.__mtsCopied && window.__mtsCopied(\(ok))",
+                completionHandler: nil)
         default:
             NSLog("Ignoring unknown bridge command: \(cmd)")
         }
+    }
+
+    /// Put text on the system pasteboard and report whether it is actually
+    /// there. `setString` returning true is not proof - the only proof is
+    /// reading the string back off the pasteboard we just wrote.
+    private func writeToPasteboard(_ text: String?) -> Bool {
+        guard let text = text, !text.isEmpty else { return false }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        let wrote = pb.setString(text, forType: .string)
+        let landed = wrote && pb.string(forType: .string) == text
+        if !landed {
+            NSLog("Mattdaemon: pasteboard write failed (setString=\(wrote), \(text.count) chars)")
+        }
+        return landed
     }
 
     // MARK: - Pop-out windows
@@ -429,7 +462,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
         editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
         editMenu.addItem(.separator())
         editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
-        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        // Ours, not NSText's, and that is the whole point. AppKit dispatches a
+        // menu key equivalent BEFORE the key event reaches the web view, so
+        // Edit > Copy used to hand ⌘C straight to WebKit - which copies its own
+        // DOM selection. A terminal's highlight is xterm's, not the DOM's, so
+        // WebKit found nothing, and ⌘C in a terminal did nothing at all while
+        // looking exactly like a copy. We ask the page for the terminal's
+        // selection first and fall back to the ordinary copy when there is none.
+        editMenu.addItem(withTitle: "Copy", action: #selector(mtsCopy(_:)), keyEquivalent: "c")
         editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
         editMenu.addItem(withTitle: "Select All",
                          action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
@@ -445,6 +485,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
                          action: #selector(reloadPage(_:)), keyEquivalent: "r")
 
         NSApp.mainMenu = mainMenu
+    }
+
+    /// Edit > Copy (⌘C). Asks the front web view for its terminal selection; if
+    /// there is one the page copies it and we are done. Otherwise the event
+    /// carries on to the responder chain, so ⌘C still works in a real text
+    /// field - the folder box in settings, say.
+    ///
+    /// The page answers asynchronously, so the fallback happens a beat later.
+    /// That is safe: nothing has consumed the event, and a DOM selection is
+    /// still a DOM selection a millisecond after you asked about it.
+    @objc private func mtsCopy(_ sender: Any?) {
+        let view = (NSApp.keyWindow?.contentView as? WKWebView) ?? webView
+        guard let wv = view else {
+            NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: sender)
+            return
+        }
+        wv.evaluateJavaScript("!!(window.__mtsCopySelection && window.__mtsCopySelection())") { result, _ in
+            if (result as? Bool) == true { return }
+            NSApp.sendAction(#selector(NSText.copy(_:)), to: nil, from: sender)
+        }
     }
 
     /// Reload the web view from the local server, bypassing any cached copy of
