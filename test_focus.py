@@ -236,8 +236,13 @@ def main():
                 for (const d of document.querySelectorAll('#warmHold > div'))
                     out[d.dataset.sid] = window.__mtsCols(d.dataset.sid);
                 return out; }""")
+            stage_cols = page.evaluate("() => window.__mtsCols(window.__mtsActive())")
             check(all(c > 80 for c in cols.values()),
-                  f"and at the STAGE's geometry, not xterm's 80x24 default ({cols})")
+                  f"and never at xterm's 80x24 default ({cols})")
+            # EXACTLY the stage, not merely close to it. One column out and the
+            # switch this whole mechanism exists for would reflow after all.
+            check(all(c == stage_cols for c in cols.values()),
+                  f"at the stage's geometry to the column ({cols} vs stage {stage_cols})")
 
             print("\nA WARM SWITCH COSTS NOTHING ON THE WIRE")
 
@@ -319,9 +324,34 @@ def main():
                       if k in before and int(seen[-1][k]) < int(before[k])}
             check(not shrunk, f"no window got narrower than it started ({shrunk})")
 
-            print("\nTHE SESSION LIST GOES")
+            print("\nTHE SESSION LIST GOES, AND COMES BACK ON ONE BUTTON")
             check(page.eval_on_selector(".sidebar", "e => getComputedStyle(e).display")
                   == "none", "in Focus the list is hidden - the strip is how you move")
+            check(page.eval_on_selector("#btnRail", "e => getComputedStyle(e).display")
+                  != "none", "and a button for it appears beside Focus")
+            wide = page.evaluate("() => window.__mtsCols(window.__mtsActive())")
+            page.click("#btnRail")
+            page.wait_for_timeout(250)
+            check(page.eval_on_selector(".sidebar", "e => getComputedStyle(e).display")
+                  != "none", "one click brings the list back")
+            check(page.eval_on_selector("body", "b => b.classList.contains('focus')"),
+                  "without unwinding Focus - the strip and the stage are still there")
+            narrow = page.evaluate("() => window.__mtsCols(window.__mtsActive())")
+            check(narrow < wide,
+                  f"the stage is re-measured, not just overlapped ({wide} -> {narrow} cols)")
+            # The one that would bite later: warm panes are mounted at the
+            # STAGE's geometry so a switch needs no reflow. Miss them here and
+            # the next warm switch lands at the old width.
+            warm_cols = page.evaluate("""() => [...document.querySelectorAll('#warmHold > div')]
+                .map(d => window.__mtsCols(d.dataset.sid))""")
+            check(warm_cols and all(c == narrow for c in warm_cols),
+                  f"and every warm pane followed it ({warm_cols} vs stage {narrow})")
+            page.click("#btnRail")
+            page.wait_for_timeout(250)
+            check(page.eval_on_selector(".sidebar", "e => getComputedStyle(e).display")
+                  == "none", "and a second click puts it away again")
+            check(page.evaluate("() => window.__mtsCols(window.__mtsActive())") == wide,
+                  "with the stage back to its full width")
 
             print("\nIT MOVES YOU ON, BUT ONLY WHEN IT SHOULD")
             # Park on the session that wants nothing: you are done here, three

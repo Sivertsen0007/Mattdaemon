@@ -441,7 +441,13 @@
   /* Focus mode is one session and the queue above it. The session list is the
      thing you are explicitly not using - the strip is how you move - so it goes,
      and the terminal takes the width. ⌘0 brings the whole wall back. */
-  body.focus .sidebar{display:none}
+  /* Hidden in Focus, because the strip is how you move - but one button away,
+     for the times you want a session the strip is not offering. Leaving Focus
+     is the other way back, and a heavier one: it rebuilds your whole wall. */
+  body.focus:not(.focus-rail) .sidebar{display:none}
+  .rail-btn{display:none}
+  body.focus .rail-btn{display:inline-block}
+  .rail-btn.on{background:#202023;color:var(--ink);border-color:#3a3a3f}
   body.focus .layouts{display:none}
   .focus-btn.on{background:#202023;color:var(--ink);border-color:#3a3a3f}
   .strip{flex:none;display:none;gap:8px;padding:8px 8px 0;align-items:stretch;
@@ -606,6 +612,7 @@
         <button class="attach" id="btnPlan" title="Open this session's plan or file in your browser" style="display:none">&#9635; Plan</button>
         <button class="attach" id="btnPop" title="Open the focused session in its own window (&#8984;&#8679;O)">&#8599; Pop out</button>
         <button class="attach focus-btn" id="btnFocus" title="Focus mode - one session, and a strip of what is waiting (&#8984;0)">&#9678; Focus</button>
+        <button class="attach rail-btn" id="btnRail" title="Show the session list without leaving Focus (&#8984;&#92;)">&#9636;</button>
         <span class="chip" id="termChip">&#9679; idle</span>
       </div>
       <div class="strip" id="strip"></div>
@@ -1955,6 +1962,7 @@
   const PANE_CAP      = 8;        // hard ceiling on mounted xterms
 
   let focusMode = soloSid ? false : !!loadPref('focus', false);
+  let railOpen = !!loadPref('focusRail', false);
   let preFocusLayout = loadPref('preFocusLayout', null);
 
   let allItems = [];              // everything that survived the rules, ranked
@@ -2091,9 +2099,17 @@
   /// live viewer, would squeeze the real tmux window to 80 columns behind your back.
   function sizeWarmHold() {
     if (!warmHold || !focusMode) return;
-    const body = termHost.querySelector('.tile .tile-body');
-    if (!body) return;
-    const hb = termHost.getBoundingClientRect(), b = body.getBoundingClientRect();
+    // Measured against the pane's OWN container, not the tile around it. The
+    // tile body has padding, so sizing the hold to it made every warm pane one
+    // column wider than the stage - invisible until something changed the
+    // stage's width, and then the next warm switch would have landed at the
+    // wrong geometry and reflowed after all. Falls back to the tile body only
+    // when the stage is empty and there is no pane to measure.
+    const stage = activeSid && panes[activeSid] ? panes[activeSid].container : null;
+    const ref = (stage && stage.parentNode && stage.clientWidth)
+      ? stage : termHost.querySelector('.tile .tile-body');
+    if (!ref) return;
+    const hb = termHost.getBoundingClientRect(), b = ref.getBoundingClientRect();
     if (!b.width || !b.height) return;
     warmHold.style.left   = (b.left - hb.left) + 'px';
     warmHold.style.top    = (b.top  - hb.top)  + 'px';
@@ -4533,6 +4549,11 @@
       toast(focusMode ? 'Focus mode on' : 'Focus mode off - your wall is back');
       return;
     }
+    if (ev.key === '\\' && focusMode) {
+      ev.preventDefault(); ev.stopPropagation();
+      setRail(!railOpen);
+      return;
+    }
     if (focusMode) {
       const top = queue[0] || null;
       // ⌘⏎ opens the next thing. ⌘⇧⏎ ANSWERS it without leaving where you are,
@@ -4567,13 +4588,31 @@
     }
   }, true);
 
+  /// The session list, back for as long as you want it, without unwinding Focus.
+  ///
+  /// It changes the terminal's width, so everything measured in columns has to
+  /// be measured again: the stage itself, and the warm panes, which are mounted
+  /// at the stage's geometry precisely so a switch needs no reflow. Skip that
+  /// and the next warm switch would land at the old width.
+  function setRail(on) {
+    railOpen = !!on;
+    savePref('focusRail', railOpen);
+    document.body.classList.toggle('focus-rail', railOpen);
+    const b = document.getElementById('btnRail');
+    if (b) b.classList.toggle('on', railOpen);
+    requestAnimationFrame(() => { refitAll(); mountWarm(); });
+  }
+
   if (btnFocus) {
+    const btnRail = document.getElementById('btnRail');
+    if (btnRail) btnRail.addEventListener('click', () => setRail(!railOpen));
     btnFocus.addEventListener('click', () => setFocusMode(!focusMode));
     // Restore the mode before the first render, so a reload lands you back in
     // the run you were in rather than on a wall you then have to collapse again.
     if (focusMode && !soloSid) {
       document.body.classList.add('focus');
       btnFocus.classList.add('on');
+      if (railOpen) setRail(true);
       if (layout !== 1) { layout = 1; focused = 0; saveLayout(); }
     } else {
       focusMode = false;
@@ -4603,6 +4642,7 @@
   window.__mtsHandoff = () => handoff && { sid: handoff.sid, kind: handoff.kind };
   window.__mtsAuto    = on => { autoAdvance = on; autoHoldUntil = 0; };
   window.__mtsAutoOn  = () => autoAdvance;
+  window.__mtsRail    = on => (on === undefined ? railOpen : setRail(on));
   window.__mtsTick    = () => tickAutoAdvance();
   window.__mtsHasPane = sid => !!panes[sid];
   window.__mtsAllSids = () => sessions.reduce((a, s) => (a[s.id] = 1, a), {});
