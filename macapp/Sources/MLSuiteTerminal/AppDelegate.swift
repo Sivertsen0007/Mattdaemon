@@ -170,6 +170,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
             guard let raw = body["url"] as? String, let url = URL(string: raw),
                   url.scheme == "http" || url.scheme == "https" else { return }
             NSWorkspace.shared.open(url)
+        case "badge":
+            // How many sessions are waiting on you, on the Dock icon. The one
+            // part of Focus mode that still works with the window behind
+            // something else - which is most of a three-hour run.
+            let n = (body["count"] as? Int) ?? Int((body["count"] as? Double) ?? 0)
+            NSApp.dockTile.badgeLabel = n > 0 ? String(n) : nil
         case "copy":
             // The terminal's selection is xterm's own, not a DOM selection, so
             // WebKit's Copy has nothing to put on the pasteboard. The page

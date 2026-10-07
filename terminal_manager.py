@@ -60,7 +60,11 @@ import terminal_worktree
 
 # ── tmux backend ──
 
-TMUX_SOCKET = "mlsterm"       # dedicated server; isolated from the `farm` tmux
+# Dedicated server, isolated from the `farm` tmux. Overridable so a test can run
+# a whole app against a scratch socket instead of the one holding the sessions
+# you are actually working in - a test that shares the socket shares the size
+# heartbeat with them, and the server sizes a session to its smallest viewer.
+TMUX_SOCKET = os.environ.get("MTS_TMUX_SOCKET") or "mlsterm"
 SESSION_PREFIX = "web-"
 TMUX_HISTORY = "50000"        # lines of scrollback tmux keeps per session
 
@@ -144,6 +148,33 @@ def _tmux_says_gone(result):
 
 def _tmux_available():
     return _resolve_tmux() is not None
+
+
+_server_options_done = threading.Event()
+
+
+def _ensure_server_options():
+    """Turn the mouse on, once per tmux server.
+
+    tmux ships with `mouse off`, and with it off tmux never asks the client
+    terminal for mouse reporting - whatever the pane app wants. So the wheel
+    scrolls nothing, and a click on something the app drew (Claude Code's diff
+    sidebar and the X that closes it, for one) never reaches it. Every piece of
+    mouse handling in static/index.html - the drag that selects, the wheel that
+    is swallowed over an unscrollable pane - was written for a mouse that tmux
+    was quietly withholding.
+
+    Set globally, not per session: a session that has not set `mouse` itself
+    reads the global value, so the ones already running pick this up too.
+
+    Idempotent and best-effort. A tmux that will not answer must never stop a
+    session from opening, so the flag is only set on success and the next
+    attach simply tries again.
+    """
+    if _server_options_done.is_set():
+        return
+    if _tmux("set-option", "-g", "mouse", "on").returncode == 0:
+        _server_options_done.set()
 
 
 def _sname(sid):
@@ -323,6 +354,7 @@ class TerminalView:
 
 def _open_view(sid, cols=80, rows=24):
     """Attach a PTY-backed tmux client to an existing session."""
+    _ensure_server_options()
     view = TerminalView(sid)
 
     master_fd, slave_fd = pty.openpty()
@@ -554,45 +586,87 @@ def _trim(text):
     return text[:_MAX_HEADLINE - 1] + "…" if len(text) > _MAX_HEADLINE else text
 
 
-def _parse_webneed(raw):
-    """(kind, headline) from a `kind|epoch|headline` stamp; ("", "") if absent.
+# How long a finished turn stays news. A `done` item is the one kind that is not
+# blocking - nothing is stopped waiting for it - so left alone it would turn the
+# strip into a list of everything you ever ignored. Half an hour is roughly how
+# long "the build finished, your move" stays true.
+_DONE_TTL = 1800.0
 
-    No TTL, unlike @webstate. A `working` stamp has to expire because a session
-    whose agent died mid-turn never fires Stop and would sit yellow for ever.
-    This one is only ever READ for a session the dots already classified as
-    waiting, so a stale stamp cannot strand anything: if nothing is waiting,
-    nobody asks what it wants.
+
+def _parse_webneed(raw):
+    """(kind, epoch, headline) from a `kind|epoch|headline` stamp.
+
+    ("", 0.0, "") when there is no stamp. The epoch is what the strip sorts and
+    ages by: "waiting 4m" is this number, and a `done` item expires against it.
+
+    No TTL for the blocking kinds, unlike @webstate. A `working` stamp has to
+    expire because a session whose agent died mid-turn never fires Stop and
+    would sit yellow for ever. An approval or a question is only ever READ for a
+    session the dots already classified as waiting, so a stale stamp cannot
+    strand anything: if nothing is waiting, nobody asks what it wants.
     """
     parts = (raw or "").split("|", 2)
     if len(parts) < 3 or not parts[0].strip():
-        return "", ""
-    return parts[0].strip(), parts[2].strip()
+        return "", 0.0, ""
+    try:
+        ts = float(parts[1])
+    except ValueError:
+        ts = 0.0
+    return parts[0].strip(), ts, parts[2].strip()
 
 
-def session_need(sid, webneed="", activity="", state=""):
-    """Why a waiting session wants you: {"kind", "headline", "source"}, or None.
+def session_need(sid, webneed="", activity="", state="", webstate=""):
+    """Why a session wants you: {"kind", "headline", "ts", "source"}, or None.
 
-    Two sources, and the order is the point. The hook was handed the tool name
-    and its input at the moment the turn stopped, so it can say "plan" where the
-    pane shows the same box as a Bash permission. The pane scrape is the floor
-    underneath it: it answers for a session that was already waiting when the
-    hook was installed, and for an agent that fires no hooks at all.
+    Three cases, and they are not the same question.
 
-    Only asked about a session that is actually waiting, so this costs nothing
-    for the green ones, and the pane read it may do is the cached one.
+    A session the dots call `attention` is BLOCKED on you, and the only thing
+    left to establish is what for. Two sources answer that, and the order is the
+    point: the hook was handed the tool name and its input at the moment the
+    turn stopped, so it can say "plan" where the pane shows the same box as a
+    Bash permission. The pane scrape is the floor underneath it - it answers for
+    a session that was already waiting when the hook was installed, and for an
+    agent that fires no hooks at all.
+
+    A session that is `idle` is not blocked, but it may still be news: a turn
+    that did real work and then stopped stamps `done`, which is "the build
+    finished, your move". That one ages out, because nothing is waiting on it.
+
+    And a session whose `working` stamp has gone stale while the dot has already
+    fallen back to idle is neither: its agent died mid-turn and never fired
+    Stop. Nothing is going to arrive, and nothing is asking - which is exactly
+    why it needs saying out loud rather than sitting quietly green.
+
+    Only ever asked about a session that is already waiting or already idle, and
+    the pane read it may do is the cached one, so this adds no work to a poll.
     """
-    if state not in ("attention",):
+    kind, ts, headline = _parse_webneed(webneed)
+
+    if state == "attention":
+        if kind and kind not in ("done",):
+            return {"kind": kind, "headline": headline, "ts": ts, "source": "hook"}
+        signals = _pane_signals(sid, activity)
+        if not signals or len(signals) < 4:
+            return None
+        pkind, pheadline = signals[2], signals[3]
+        if not pkind and not pheadline:
+            return None
+        # No stamp to date it by, so "waiting" starts from now. Honest about
+        # what it knows: the pane can say WHAT is being asked, never since when.
+        return {"kind": pkind or "question", "headline": pheadline,
+                "ts": 0.0, "source": "pane"}
+
+    if state != "idle":
         return None
-    kind, headline = _parse_webneed(webneed)
-    if kind:
-        return {"kind": kind, "headline": headline, "source": "hook"}
-    signals = _pane_signals(sid, activity)
-    if not signals or len(signals) < 4:
-        return None
-    kind, headline = signals[2], signals[3]
-    if not kind and not headline:
-        return None
-    return {"kind": kind or "question", "headline": headline, "source": "pane"}
+
+    if kind == "done" and ts and time.time() - ts < _DONE_TTL:
+        return {"kind": "done", "headline": headline, "ts": ts, "source": "hook"}
+
+    ws, ws_ts = _parse_webstate((webstate or "").strip().lower())
+    if ws == "working" and ws_ts and time.time() - ws_ts >= _WEBSTATE_WORKING_TTL:
+        return {"kind": "stuck", "headline": "stopped mid-turn",
+                "ts": ws_ts, "source": "hook"}
+    return None
 
 
 def _pane_reason(raw_tail, low_tail):
@@ -884,12 +958,14 @@ def all_states():
                                         s.get("webstate", ""),
                                         s.get("activity", ""))
               for s in sessions}
-    # Only the waiting ones are asked what they want, so the green majority adds
-    # no work to a poll that runs every few seconds for every session.
+    # Only the waiting and the idle ones are asked what they want, and the idle
+    # ones are answered from a stamp alone - so the green majority still adds no
+    # pane read to a poll that runs every few seconds for every session.
     needs = {}
     for sess in sessions:
         n = session_need(sess["id"], sess.get("webneed", ""),
-                         sess.get("activity", ""), states.get(sess["id"], ""))
+                         sess.get("activity", ""), states.get(sess["id"], ""),
+                         sess.get("webstate", ""))
         if n:
             needs[sess["id"]] = n
     return {"ok": True,

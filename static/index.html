@@ -434,10 +434,76 @@
   .term.grid[data-layout="1"] .tile.focused{box-shadow:none}
   .term.grid[data-layout="1"] .tile-head{display:none}
 
+  /* ---- Focus mode: one stage, and a strip of what is waiting ---- */
+  /* A mode, not a fifth layout. It forces one pane and puts the 2/3/4 wall back
+     untouched on the way out, because `tiles` is always four long whatever is
+     on screen. */
+  body.focus .layouts{display:none}
+  .focus-btn.on{background:#202023;color:var(--ink);border-color:#3a3a3f}
+  .strip{flex:none;display:none;gap:8px;padding:8px 8px 0;align-items:stretch;
+    overflow-x:auto;scrollbar-width:none}
+  .strip::-webkit-scrollbar{display:none}
+  body.focus .strip{display:flex}
+  .strip-item{flex:0 0 auto;align-self:stretch;min-width:200px;max-width:320px;display:flex;flex-direction:column;
+    gap:3px;padding:7px 10px;border:1px solid var(--border);border-radius:9px;
+    background:var(--surface);cursor:pointer;text-align:left;font:inherit;color:inherit}
+  .strip-item:hover{border-color:#3a3a3f;background:#1a1a1d}
+  /* The session you are already in. Shown so the strip never hides what is in
+     front of you, never clickable, because clicking it would do nothing. */
+  .strip-item.pinned{cursor:default;border-style:dashed;opacity:.7}
+  .strip-item.pinned:hover{background:var(--surface);border-color:var(--border)}
+  .strip-item .top{display:flex;align-items:center;gap:6px;font-size:11.5px;min-width:0}
+  .strip-item .nm{color:var(--ink);font-weight:600;overflow:hidden;
+    text-overflow:ellipsis;white-space:nowrap}
+  .strip-item .where,.strip-item .slot{font-family:'JetBrains Mono',monospace;font-size:9.5px;
+    color:var(--inkDim);border:1px solid var(--border);border-radius:4px;padding:0 4px;flex:none}
+  .strip-item .slot{margin-left:auto}
+  .strip-item .line{display:flex;align-items:baseline;gap:6px;min-width:0;font-size:11px}
+  .strip-item .kind{font-family:'JetBrains Mono',monospace;font-size:9.5px;flex:none;
+    letter-spacing:.04em;text-transform:uppercase}
+  .strip-item .head{color:var(--inkMute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .strip-item .age{margin-left:auto;flex:none;font-family:'JetBrains Mono',monospace;
+    font-size:9.5px;color:var(--inkDim)}
+  /* An item scraped off the pane names what it found, never a paraphrase - so it
+     says where it came from and the wording stays the prompt's own. */
+  .strip-item .src{font-size:9px;color:var(--inkDim);font-family:'JetBrains Mono',monospace}
+  .strip-item .ok{margin-top:4px;align-self:flex-start;background:transparent;
+    border:1px solid var(--border);border-radius:5px;color:var(--inkMute);cursor:pointer;
+    font-family:'JetBrains Mono',monospace;font-size:10px;padding:2px 7px}
+  .strip-item .ok:hover{background:#202023;color:var(--ink);border-color:#3a3a3f}
+  .k-approval{color:var(--stAttention)}
+  .k-question{color:var(--stAttention)}
+  .k-plan{color:#8ab4ff}
+  .k-stuck{color:var(--stOffline)}
+  .k-done{color:var(--stIdle)}
+  .k-published{color:#c8a2ff}
+  .strip-foot{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:0 4px;
+    font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--inkDim);
+    white-space:nowrap;align-self:center}
+  .strip-empty{align-self:center;font-family:'JetBrains Mono',monospace;font-size:11px;
+    color:var(--inkDim);padding:8px 4px}
+
+  /* Warm panes: mounted, laid out at the stage's exact size, and off screen.
+     NEVER display:none. A hidden container has zero size, fit() against it is a
+     documented no-op, so the pane would keep xterm's default 80x24 - and the
+     size heartbeat reports what each pane believes it is, while the server sizes
+     a session to the smallest live viewer. A warm pane at 80x24 would squeeze
+     the real tmux window down to 80 columns while you were not looking. */
+  .warm-hold{position:absolute;overflow:hidden;visibility:hidden;pointer-events:none;z-index:-1}
+  .warm-hold > div{width:100%;height:100%}
+
+  /* An approval sent from the strip is undoable for a few seconds, which is why
+     the toast has to be clickable - hence pointer-events back on. */
+  .toast.act{pointer-events:auto}
+  .toast .undo{margin-left:10px;background:transparent;border:1px solid var(--border);
+    border-radius:5px;color:var(--ink);font:inherit;font-size:11px;padding:2px 8px;cursor:pointer}
+  .toast .undo:hover{background:#2a2a2e}
+
   .tile-head{flex:none;height:30px;display:flex;align-items:center;gap:8px;padding:0 6px 0 10px;
     border-bottom:1px solid var(--border);background:var(--surface2);
     font-family:'JetBrains Mono',monospace;font-size:11px;cursor:grab}
   .tile-head .sdot{width:7px;height:7px;border-radius:50%;flex:none}
+  .strip-item .sdot{width:7px;height:7px;border-radius:50%;flex:none}
   .tile-head .nm{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
   .tile-head .where{color:var(--inkDim);font-size:9.5px;border:1px solid var(--border);
     border-radius:4px;padding:1px 5px;flex:none}
@@ -530,10 +596,13 @@
         <button class="attach" id="btnAttach" title="Upload an image or file into this session (or paste / drop it)">&#8613; Attach</button>
         <button class="attach" id="btnPlan" title="Open this session's plan or file in your browser" style="display:none">&#9635; Plan</button>
         <button class="attach" id="btnPop" title="Open the focused session in its own window (&#8984;&#8679;O)">&#8599; Pop out</button>
+        <button class="attach focus-btn" id="btnFocus" title="Focus mode - one session, and a strip of what is waiting (&#8984;0)">&#9678; Focus</button>
         <span class="chip" id="termChip">&#9679; idle</span>
       </div>
+      <div class="strip" id="strip"></div>
       <div class="term grid" id="term" data-layout="1">
         <div class="placeholder" id="termPlaceholder">No session &mdash; create one to begin.</div>
+        <div class="warm-hold" id="warmHold" aria-hidden="true"></div>
       </div>
     </div>
 
@@ -909,6 +978,9 @@
   let focused = soloSid ? 0 : loadPref('focused', 0);
   const popped = new Set();          // sids showing in their own window
   let activeSid = null;
+  let lastInputAt = 0;               // last keystroke out of any pane (the warm
+                                     // set must never churn mid-keystroke)
+  const paneTouched = {};            // sid -> when its pane was last on stage
   let booted = false;                // has the grid been built once?
 
   if (![1, 2, 3, 4].includes(layout)) layout = 1;
@@ -963,6 +1035,9 @@
     const container = document.createElement('div');
     container.style.width = '100%';
     container.style.height = '100%';
+    // Says which session this container holds, so the warm hold can be swept
+    // without walking `panes` to find out what is in it.
+    container.dataset.sid = sid;
     // Not attached here: renderGrid puts it in whichever tile the session is in,
     // and moves it when the session moves.
 
@@ -1218,6 +1293,7 @@
 
     term.onData(data => {
       if (isDeviceReply(data)) return;
+      lastInputAt = Date.now();
       inputQueue.push(data);
       flushInput();
     });
@@ -1285,6 +1361,13 @@
     for (const sid of streamSids()) {
       const pane = panes[sid];
       if (!pane || !pane.connected || pane.exited || pane.closing) continue;
+      // A pane with no box on screen has never been fitted, so it still believes
+      // it is xterm's default 80x24 - and the server sizes a session to its
+      // SMALLEST reporting viewer. Reporting that would squeeze the real tmux
+      // window down to 80 columns while you were not looking. Warm panes are
+      // deliberately real-sized and merely invisible, so they report the stage's
+      // geometry and pass this; anything genuinely zero-size stays quiet.
+      if (!pane.container.clientWidth || !pane.container.clientHeight) continue;
       const size = pane.term.cols + 'x' + pane.term.rows;
       const last = sizeSaid[sid];
       if (last && last.size === size && now - last.at < 4000) continue;
@@ -1319,11 +1402,22 @@
 
   const sameList = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 
-  /// The sessions that should be on the wire: whatever sits in a visible pane.
+  /// The sessions that should be on the wire: what is visible, plus the warm
+  /// set - the strip's sessions and the one you just left.
+  ///
+  /// The warm half is why a Focus switch is free. A session that is off the wire
+  /// has to be brought onto it, which re-opens the one merged stream, which
+  /// makes the server replay every subscribed pane and xterm reset and reflow
+  /// each one. Keeping the three the strip offers already subscribed means a
+  /// switch changes no sid here at all, so syncStream finds nothing to do.
+  ///
   /// A popped-out session is not among them - its own window streams it.
   function streamSids() {
-    return tiles.slice(0, layout).filter(
-      sid => sid && panes[sid] && !panes[sid].exited && !panes[sid].closing);
+    const want = [];
+    for (const sid of tiles.slice(0, layout)) if (sid && !want.includes(sid)) want.push(sid);
+    for (const sid of warmSet) if (sid && !want.includes(sid) && !popped.has(sid)) want.push(sid);
+    return want.filter(
+      sid => panes[sid] && !panes[sid].exited && !panes[sid].closing);
   }
 
   /// Bring the connection into line with what is on screen. Cheap to call after
@@ -1696,7 +1790,12 @@
     // which is what leaves shifted and overlapping text behind.
     requestAnimationFrame(() => {
       refitAll();
+      // renderGrid detaches EVERY pane before it wipes the tiles, the warm ones
+      // included, so they are re-hung here - at the stage's fresh geometry,
+      // which is also what a window resize has just changed.
+      mountWarm();
       syncStream();
+      if (activeSid) paneTouched[activeSid] = Date.now();
       const pane = panes[activeSid];
       if (pane) pane.term.focus();
     });
@@ -1710,6 +1809,7 @@
     renderSessions();
     renderHead();
     planOnSwitch();
+    renderStrip();
   }
 
   /// What the polls call. The status of a session changes every couple of
@@ -1741,6 +1841,7 @@
     updateTiles();
     renderSessions();
     renderHead();
+    renderStrip();
   }
 
   /// Put a session in a pane. Putting it in one it already occupies elsewhere
@@ -1801,6 +1902,534 @@
     const at = tiles.indexOf(sid);
     if (at >= 0 && at < layout) { setFocus(at); return; }
     place(sid, firstFreeTile());
+  }
+
+
+  // ── Focus mode: one stage, and a strip of what is waiting ────────────────
+  //
+  // A run that lasts hours is a different thing from a wall of four panes. You
+  // are not watching sessions; you are clearing a queue - one session fills the
+  // window, a strip above it says who wants you and in what order, and you move
+  // on. Two problems, solved in different places:
+  //
+  //   KNOWING what needs you is a signal problem, answered by the @webneed
+  //   stamp (the hook knows which box is open, because it was handed the tool)
+  //   with the pane scrape underneath it for agents that fire no hooks.
+  //
+  //   SWITCHING instantly is a transport problem. A switch used to re-open the
+  //   one merged stream, because streamSids() was "whatever is visible" and the
+  //   session you were switching TO was off the wire. Re-opening makes the
+  //   server replay every subscribed pane's screen, and handleEvent resets and
+  //   rewrites each one. That is the delay you feel, and it is worst for a vps:
+  //   session whose bytes come through the tunnel.
+  //
+  // The fix is one rule: THE STRIP IS THE WARM SET. The three sessions the strip
+  // offers, plus the one you just left, are mounted and on the wire already - so
+  // clicking any of them changes no sid on the stream, nothing is replayed, and
+  // the switch is a container move plus a focus(). Everything the strip offers
+  // is instant by construction, not just the top one.
+  const stripEl  = document.getElementById('strip');
+  const warmHold = document.getElementById('warmHold');
+  const btnFocus = document.getElementById('btnFocus');
+
+  // Ranked, and the order is a claim about who is blocked. An approval has
+  // stopped a turn dead and is the cheapest to answer; a plan has stopped one
+  // too but wants reading; a question wants typing. `stuck` is a turn that will
+  // never arrive on its own. `done` and `published` are news rather than
+  // demands, so they sit last and can never push something blocked off the end.
+  const KIND_RANK = { approval: 0, plan: 1, question: 2, stuck: 3, done: 4, published: 5 };
+  const STRIP_SLOTS = 3;          // how many are warm, which is how many are shown
+  const SNOOZE_MS   = 10 * 60 * 1000;
+  const NEWS_TTL    = 30 * 60 * 1000;   // how long a `done` stays news
+  const WARM_DEBOUNCE = 10000;    // changing the warm set re-opens the stream
+  const PANE_IDLE_MS  = 15 * 60 * 1000; // outside the warm set and this old -> disposed
+  const PANE_CAP      = 8;        // hard ceiling on mounted xterms
+
+  let focusMode = soloSid ? false : !!loadPref('focus', false);
+  let preFocusLayout = loadPref('preFocusLayout', null);
+
+  let allItems = [];              // everything that survived the rules, ranked
+  let queue = [];                 // allItems minus the session on stage
+  let pinnedItem = null;          // the stage's own item, when it has one
+  let warmSet = [], warmKey = '', warmAt = 0;
+  let lastStage = null;           // the session you just left - warm, so going back is free
+  let cleared = 0;                // items that have left the queue this run
+  let lastSwitchMs = null, lastSwitchWarm = false;
+
+  const firstSeen = {};           // key -> when this exact item was first seen
+  const pollCount = {};           // key -> consecutive polls it has survived
+  const snoozed   = {};           // key -> ms until it may come back
+  const dismissed = {};           // key -> true; opening the session sets it
+  const onStrip   = new Set();    // keys in the queue now, so a departure counts
+
+  const keyOf = (sid, kind, at) => sid + '|' + kind + '|' + at;
+
+  let seenThisPoll = new Set();
+  function firstSeenAt(key, now) {
+    seenThisPoll.add(key);
+    if (!firstSeen[key]) firstSeen[key] = now;
+    return firstSeen[key];
+  }
+
+  function ageText(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return s + 's';
+    const m = Math.round(s / 60);
+    return m < 60 ? m + 'm' : Math.round(m / 60) + 'h';
+  }
+
+  /// Everything that wants you, ranked, after the four rules that keep the
+  /// strip honest: one poll of debounce, news expires, snooze is per item, and
+  /// the session you are in is pinned rather than offered.
+  function buildQueue() {
+    const now = Date.now();
+    seenThisPoll = new Set();
+    const raw = [];
+
+    for (const sid in needs) {
+      const n = needs[sid];
+      if (!n || popped.has(sid)) continue;
+      const kind = n.kind || 'question';
+      // A hook stamp carries the moment the turn stopped. A pane scrape does
+      // not, and inventing one would be the single thing a scraped item must
+      // never do - so it is dated from when this page first saw it, which is
+      // the only true answer available.
+      const at = n.ts ? n.ts * 1000 : firstSeenAt(keyOf(sid, kind, 'pane'), now);
+      raw.push({ sid, kind, headline: n.headline || '', source: n.source || 'hook', at });
+    }
+
+    // `published` needs nothing from the server: it IS the @webplan / @webfile
+    // stamp the same poll already carries, which is how a /farm plan and a
+    // term-show file reach you. The stamp has no time in it, so again: dated
+    // from the poll that first saw it.
+    for (const [map, isPlan] of [[plans, true], [files, false]]) {
+      for (const sid in map) {
+        const stamp = map[sid];
+        if (!stamp || popped.has(sid)) continue;
+        const at = firstSeenAt(sid + '|published|' + stamp, now);
+        if (now - at > NEWS_TTL) continue;
+        const path = splitStamp(stamp).path;
+        raw.push({ sid, kind: 'published', source: 'stamp', at,
+                   headline: isPlan ? planName(path) : fileName(path) });
+      }
+    }
+
+    const live = new Set();
+    const out = [];
+    for (const it of raw) {
+      it.key = keyOf(it.sid, it.kind, Math.round(it.at));
+      live.add(it.key);
+      seenThisPoll.add(it.key);
+      // One poll of debounce. A permission box that is drawn and answered in the
+      // same breath - which happens constantly on an auto-accepting session -
+      // would otherwise flash onto the strip and straight off it again.
+      pollCount[it.key] = (pollCount[it.key] || 0) + 1;
+      if (pollCount[it.key] < 2) continue;
+      if (dismissed[it.key]) continue;
+      if (snoozed[it.key] && now < snoozed[it.key]) continue;
+      // News expires. A finished turn you never opened stops being news, or the
+      // strip quietly becomes a list of everything you have ever ignored.
+      if ((it.kind === 'done' || it.kind === 'published') && now - it.at > NEWS_TTL) continue;
+      out.push(it);
+    }
+    out.sort((a, b) => (KIND_RANK[a.kind] ?? 9) - (KIND_RANK[b.kind] ?? 9) || a.at - b.at);
+
+    // Something that has stopped asking has been dealt with - by you, here or in
+    // the session itself. Snoozing and expiring are not that, so neither counts.
+    for (const k of [...onStrip]) if (!live.has(k)) { cleared++; onStrip.delete(k); }
+    for (const it of out) onStrip.add(it.key);
+
+    for (const k in pollCount) if (!live.has(k)) delete pollCount[k];
+    for (const k in firstSeen) if (!seenThisPoll.has(k)) delete firstSeen[k];
+    for (const k in dismissed) if (!live.has(k)) delete dismissed[k];
+    for (const k in snoozed) if (now > snoozed[k]) delete snoozed[k];
+
+    allItems = out;
+    splitQueue();
+  }
+
+  /// Split the ranked list into "the one you are in" and "the ones you could go
+  /// to". Separate from buildQueue because switching the stage changes this and
+  /// nothing else - and re-running buildQueue off a poll would advance the
+  /// debounce counters a second time and let a one-poll item through early.
+  function splitQueue() {
+    pinnedItem = allItems.find(i => i.sid === activeSid) || null;
+    queue = allItems.filter(i => i.sid !== activeSid);
+    sendBadge(allItems.length);
+  }
+
+  // ── the warm set ─────────────────────────────────────────────────────────
+
+  /// The strip, plus the one you just left. Nothing else: four or five panes on
+  /// one stream is what the merged stream was built for, and every extra one is
+  /// another xterm's renderer and scrollback on an 8 GB Mac.
+  function warmWanted() {
+    const want = [];
+    for (const it of queue.slice(0, STRIP_SLOTS))
+      if (it.sid !== activeSid && !want.includes(it.sid)) want.push(it.sid);
+    if (lastStage && lastStage !== activeSid && !want.includes(lastStage))
+      want.push(lastStage);
+    return want.filter(sid => !popped.has(sid));
+  }
+
+  /// Put the hold exactly where the stage is, and at exactly its size.
+  ///
+  /// That sizing is the whole trick. A warm pane is mounted at the stage's own
+  /// cols and rows, so moving its container onto the stage changes no dimension
+  /// and needs no reflow - and the size heartbeat, which reports what each pane
+  /// believes it is, reports the stage geometry for it rather than xterm's 80x24
+  /// default. Report 80x24 and the server, which sizes a session to its smallest
+  /// live viewer, would squeeze the real tmux window to 80 columns behind your back.
+  function sizeWarmHold() {
+    if (!warmHold || !focusMode) return;
+    const body = termHost.querySelector('.tile .tile-body');
+    if (!body) return;
+    const hb = termHost.getBoundingClientRect(), b = body.getBoundingClientRect();
+    if (!b.width || !b.height) return;
+    warmHold.style.left   = (b.left - hb.left) + 'px';
+    warmHold.style.top    = (b.top  - hb.top)  + 'px';
+    warmHold.style.width  = b.width + 'px';
+    warmHold.style.height = b.height + 'px';
+  }
+
+  /// Mount everything in the warm set into the hold, fitted to the stage.
+  function mountWarm() {
+    if (!focusMode || !warmHold) return;
+    sizeWarmHold();
+    for (const sid of warmSet) {
+      if (sid === activeSid) continue;
+      const pane = ensurePane(sid);
+      if (pane.container.parentNode !== warmHold) warmHold.appendChild(pane.container);
+      try { pane.fit.fit(); } catch {}
+      if (!paneTouched[sid]) paneTouched[sid] = Date.now();
+    }
+    for (const c of [...warmHold.children]) {
+      const sid = c.dataset.sid;
+      if (sid && !warmSet.includes(sid)) warmHold.removeChild(c);
+    }
+  }
+
+  /// Bring the warm set into line with the strip - slowly, on purpose.
+  ///
+  /// Changing it re-opens the one stream and repaints every pane on it, so it
+  /// moves only when the strip's IDENTITY changes, at most every ten seconds,
+  /// and never while a keystroke is in flight. Without that the strip's normal
+  /// churn would turn into a replay storm underneath you.
+  function syncWarmSet() {
+    if (!focusMode) {
+      if (warmSet.length) { warmSet = []; warmKey = ''; mountWarm(); syncStream(); }
+      return;
+    }
+    const want = warmWanted();
+    const key = want.join(',');
+    if (key === warmKey) { mountWarm(); return; }
+    const now = Date.now();
+    if (now - warmAt < WARM_DEBOUNCE || now - lastInputAt < 500) return;
+    warmKey = key; warmAt = now; warmSet = want;
+    mountWarm();
+    syncStream();
+  }
+
+  // ── switching ────────────────────────────────────────────────────────────
+
+  /// Open a session on the stage. Free when it is warm, ordinary when it is not.
+  ///
+  /// Warm: the stage pane goes back into the hold, the warm one comes out, and
+  /// no sid on the stream changes - so syncStream does nothing, nothing is
+  /// replayed, nothing is reset and nothing reflows. Cold: the old path, which
+  /// is exactly one re-open, and the session is warm from then on.
+  ///
+  /// It is never called by a poll. The strip tells you; you click. Auto-jumping
+  /// would decide for you, and get it wrong.
+  function focusOpen(sid) {
+    if (!sid || sid === activeSid) return;
+    const t0 = performance.now();
+    clearNews(sid);
+    const body = termHost.querySelector('.tile .tile-body');
+    const warm = panes[sid] && warmHold && panes[sid].container.parentNode === warmHold;
+    // An empty stage has no pane to swap out and a tile body full of "drop a
+    // session here", so it takes the ordinary path and builds the wall properly.
+    if (!focusMode || !warm || !body || !activeSid || !panes[activeSid]) {
+      lastStage = activeSid;
+      switchTo(sid);
+      noteSwitch(t0, false);
+      return;
+    }
+    const prev = activeSid;
+    const prevPane = prev && panes[prev];
+    if (prevPane && prevPane.container.parentNode === body) warmHold.appendChild(prevPane.container);
+    warmHold.removeChild(panes[sid].container);
+    body.appendChild(panes[sid].container);
+    for (let i = 0; i < tiles.length; i++) if (tiles[i] === sid) tiles[i] = null;
+    tiles[focused] = sid;
+    activeSid = sid;
+    lastStage = prev;
+    paneTouched[sid] = Date.now();
+    // The two sessions swap places in the warm set, here and now - because the
+    // one you LEFT has to stay on the wire. streamSids() is tiles plus the warm
+    // set, so letting it fall out of both would change the stream's sid list and
+    // re-open it, replaying every pane: exactly the cost this switch exists to
+    // avoid, and paid on the way OUT of a session rather than into it. Swapping
+    // keeps the set the same size and the wire identical, which is why going
+    // back to where you just were is free too.
+    //
+    // Not a recompute: syncWarmSet owns that, on its own debounced clock.
+    warmSet = [prev].concat(warmSet.filter(x => x !== sid && x !== prev));
+    warmKey = warmSet.join(',');
+    savePref('active', sid);
+    saveLayout();
+    try { panes[sid].term.focus(); } catch {}
+    splitQueue();
+    renderHead(); renderSessions(); planOnSwitch(); updateTiles(); renderStrip();
+    noteSwitch(t0, true);
+  }
+
+  /// Measure it, do not assume it. A warm switch that is not inside one frame
+  /// means the warm set is not doing its job, and that should show up in a
+  /// number rather than in feel - so the strip's footer carries the last one and
+  /// window.__mtsSwitches carries them all.
+  function noteSwitch(t0, warm) {
+    requestAnimationFrame(() => {
+      lastSwitchMs = Math.round(performance.now() - t0);
+      lastSwitchWarm = warm;
+      (window.__mtsSwitches = window.__mtsSwitches || []).push(
+        { ms: lastSwitchMs, warm, at: Date.now() });
+      renderStrip();
+    });
+  }
+
+  /// Opening a session answers its own news: a finished turn you have just read
+  /// is not news any more.
+  function clearNews(sid) {
+    let hit = false;
+    for (const it of allItems)
+      if (it.sid === sid && (it.kind === 'done' || it.kind === 'published')) {
+        dismissed[it.key] = true; hit = true;
+      }
+    if (hit) { allItems = allItems.filter(i => !dismissed[i.key]); splitQueue(); }
+  }
+
+  // ── approving from the strip ─────────────────────────────────────────────
+
+  /// Send the accept keystroke to a session without leaving the one you are in.
+  ///
+  /// It presses the same button you would, which is the convenience and also the
+  /// risk - so it is undoable. Not with a fake undo that pretends an Enter can
+  /// be taken back: the undo sends Esc, which is what actually stops a tool call
+  /// Claude has just started. The toast says so rather than implying magic.
+  function approveFromStrip(it) {
+    if (!it) return;
+    if (it.kind !== 'approval' && it.kind !== 'plan') {
+      toast('Only an approval or a plan can be answered from here - open it instead');
+      return;
+    }
+    const s = sessions.find(x => x.id === it.sid);
+    const name = s ? s.name : it.sid;
+    dismissed[it.key] = true;
+    sendTo(it.sid, '\r');
+    renderStrip();
+    toastAction('Approved ' + name, 'Undo (interrupt)', () => {
+      sendTo(it.sid, '\x1b');
+      toast('Interrupted ' + name);
+    }, 6000);
+  }
+
+  function snoozeItem(it) {
+    if (!it) return;
+    snoozed[it.key] = Date.now() + SNOOZE_MS;
+    // Keyed on sid + kind + time, so a NEW question from a snoozed session comes
+    // back at once - snoozing an item is not silencing a session.
+    allItems = allItems.filter(i => i.key !== it.key);
+    splitQueue();
+    renderStrip();
+    toast('Snoozed for 10 minutes');
+  }
+
+  function sendTo(sid, data) {
+    fetch('/api/terminal/input', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sid, data })
+    }).catch(() => {});
+  }
+
+  // ── the strip ────────────────────────────────────────────────────────────
+
+  function stripCard(it, slot, pinned) {
+    const s = sessions.find(x => x.id === it.sid);
+    const el = document.createElement('div');
+    el.className = 'strip-item' + (pinned ? ' pinned' : '');
+
+    const top = document.createElement('div');
+    top.className = 'top';
+    const dot = document.createElement('span');
+    dot.className = 'sdot ' + dotClass(it.sid);
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = s ? s.name : it.sid;
+    top.appendChild(dot);
+    top.appendChild(nm);
+    if (it.sid.startsWith('vps:')) {
+      const w = document.createElement('span');
+      w.className = 'where'; w.textContent = 'vps';
+      top.appendChild(w);
+    }
+    const tag = document.createElement('span');
+    tag.className = 'slot';
+    tag.textContent = pinned ? 'on stage' : '⌘' + slot;
+    top.appendChild(tag);
+
+    const line = document.createElement('div');
+    line.className = 'line';
+    const kind = document.createElement('span');
+    kind.className = 'kind k-' + it.kind;
+    kind.textContent = it.kind;
+    const head = document.createElement('span');
+    head.className = 'head';
+    head.textContent = it.headline || 'wants you';
+    const age = document.createElement('span');
+    age.className = 'age';
+    age.textContent = ageText(Date.now() - it.at);
+    line.appendChild(kind); line.appendChild(head); line.appendChild(age);
+
+    el.appendChild(top);
+    el.appendChild(line);
+    // An item read off the pane shows the prompt's own words and says where they
+    // came from. A wrong headline costs trust instantly, so it is never dressed
+    // up as something the session told us.
+    if (it.source === 'pane') {
+      const src = document.createElement('div');
+      src.className = 'src';
+      src.textContent = 'read off the screen';
+      el.appendChild(src);
+    }
+    el.title = (s ? s.name : it.sid) + ' - ' + it.kind
+             + (it.headline ? ': ' + it.headline : '');
+    if (!pinned) {
+      el.tabIndex = 0;
+      el.addEventListener('click', () => focusOpen(it.sid));
+      el.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); focusOpen(it.sid); }
+      });
+    }
+    // Yes, from here, without leaving the session you are in. Only on the two
+    // kinds where "yes" is a button rather than a sentence - a question wants
+    // typing, and pretending Enter answers it would answer it wrongly.
+    if (it.kind === 'approval' || it.kind === 'plan') {
+      const ok = document.createElement('button');
+      ok.className = 'ok';
+      ok.textContent = pinned ? 'Approve' : 'Approve  \u2318\u21e7\u21a9';
+      ok.title = 'Send the accept key to this session (undoable for a few seconds)';
+      ok.addEventListener('click', ev => { ev.stopPropagation(); approveFromStrip(it); });
+      el.appendChild(ok);
+    }
+    return el;
+  }
+
+  function renderStrip() {
+    if (!stripEl) return;
+    if (!focusMode) { stripEl.replaceChildren(); return; }
+    const frag = document.createDocumentFragment();
+    if (pinnedItem) frag.appendChild(stripCard(pinnedItem, 0, true));
+    queue.slice(0, STRIP_SLOTS).forEach((it, i) => frag.appendChild(stripCard(it, i + 1, false)));
+    if (!pinnedItem && !queue.length) {
+      const e = document.createElement('div');
+      e.className = 'strip-empty';
+      e.textContent = 'Nothing waiting - everything is working or already answered.';
+      frag.appendChild(e);
+    }
+    const foot = document.createElement('div');
+    foot.className = 'strip-foot';
+    const waiting = queue.length + (pinnedItem ? 1 : 0);
+    const more = queue.length > STRIP_SLOTS ? '  ·  +' + (queue.length - STRIP_SLOTS) + ' behind' : '';
+    const sw = lastSwitchMs === null ? ''
+             : '  ·  ' + (lastSwitchWarm ? 'warm' : 'cold') + ' ' + lastSwitchMs + 'ms';
+    foot.textContent = cleared + ' cleared · ' + waiting + ' waiting' + more + sw;
+    frag.appendChild(foot);
+    stripEl.replaceChildren(frag);
+  }
+
+  // ── turning it on ────────────────────────────────────────────────────────
+
+  /// Focus is a MODE, not a fifth layout. It forces one pane and remembers the
+  /// wall you had; leaving puts that wall back exactly as it was, because
+  /// `tiles` is always four long whatever is on screen.
+  function setFocusMode(on) {
+    if (soloSid) return;
+    on = !!on;
+    if (on === focusMode) return;
+    focusMode = on;
+    savePref('focus', on);
+    document.body.classList.toggle('focus', on);
+    if (btnFocus) btnFocus.classList.toggle('on', on);
+    if (on) {
+      preFocusLayout = layout;
+      savePref('preFocusLayout', layout);
+      cleared = 0;
+      // The stage is pane 0, but you may have been looking at pane 3. Swap
+      // rather than overwrite: the wall is restored on the way out, so losing a
+      // session out of it here would be losing it for good.
+      const was = tiles[focused] || null;
+      if (was && tiles[0] !== was) {
+        const at = tiles.indexOf(was);
+        tiles[at] = tiles[0];
+        tiles[0] = was;
+      }
+      layout = 1;
+      focused = 0;
+      saveLayout();
+      render();
+    } else {
+      // Every warm pane goes home before the wall is rebuilt, or renderGrid
+      // would re-parent containers out from under the hold.
+      if (warmHold) for (const c of [...warmHold.children]) warmHold.removeChild(c);
+      warmSet = []; warmKey = ''; warmAt = 0;
+      if (preFocusLayout && [1, 2, 3, 4].includes(preFocusLayout)) layout = preFocusLayout;
+      saveLayout();
+      render();
+    }
+  }
+
+  /// The Dock badge is the only part of this that works while the window is not
+  /// on screen, so it says the one number that matters: how many are waiting.
+  /// Deliberately NOT scoped to Focus mode - "three sessions want you" is worth
+  /// the same whether you are running a queue or looking at a wall of four.
+  let badgeSaid = -1;
+  function sendBadge(n) {
+    if (n === badgeSaid) return;
+    badgeSaid = n;
+    try {
+      const bridge = window.webkit && window.webkit.messageHandlers
+                  && window.webkit.messageHandlers.mts;
+      if (bridge) bridge.postMessage({ cmd: 'badge', count: n });
+    } catch {}
+  }
+
+  // ── a run that lasts hours ───────────────────────────────────────────────
+
+  /// Dispose panes nobody is looking at.
+  ///
+  /// `panes` is keyed by sid and was only ever torn down when a session died or
+  /// was stashed - fine for a four-pane wall, a leak over a three-hour run.
+  /// Visiting thirty sessions left thirty live xterms, each holding a renderer
+  /// and its scrollback. Anything outside the warm set, off the wall, and not on
+  /// stage for fifteen minutes goes; re-opening it is one ordinary cold switch.
+  function sweepPanes() {
+    const keep = new Set(streamSids());
+    for (const sid of tiles) if (sid) keep.add(sid);
+    for (const sid of popped) keep.add(sid);
+    if (activeSid) keep.add(activeSid);
+    const now = Date.now();
+    const spare = Object.keys(panes)
+      .filter(sid => !keep.has(sid))
+      .sort((a, b) => (paneTouched[a] || 0) - (paneTouched[b] || 0));
+    let mounted = Object.keys(panes).length;
+    for (const sid of spare) {
+      const idle = now - (paneTouched[sid] || 0) > PANE_IDLE_MS;
+      if (!idle && mounted <= PANE_CAP) continue;
+      destroyPane(sid);
+      delete paneTouched[sid];
+      mounted--;
+    }
   }
 
   // ── header + status chip ─────────────────────────────────────────────────
@@ -3477,9 +4106,32 @@
   let toastTimer = null;
   function toast(msg) {
     const el = document.getElementById('toast');
-    el.textContent = msg; el.classList.add('show');
+    el.textContent = msg;
+    el.classList.remove('act');
+    el.classList.add('show');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => el.classList.remove('show'), 2600);
+  }
+
+  /// A toast with one thing you can do about it, for a window.
+  ///
+  /// Only ever used where the action is a real cure, never as a decoration on
+  /// something that cannot be taken back.
+  function toastAction(msg, label, fn, ms) {
+    const el = document.getElementById('toast');
+    el.replaceChildren(document.createTextNode(msg));
+    const b = document.createElement('button');
+    b.className = 'undo';
+    b.textContent = label;
+    b.addEventListener('click', () => {
+      el.classList.remove('show', 'act');
+      clearTimeout(toastTimer);
+      try { fn(); } catch {}
+    });
+    el.appendChild(b);
+    el.classList.add('show', 'act');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show', 'act'), ms || 6000);
   }
   function sendToActive(text) {
     if (!activeSid) return;
@@ -3631,6 +4283,8 @@
       }
     } catch { return; }
     syncStamps();
+    buildQueue();
+    syncWarmSet();
     renderLive();
   }
 
@@ -3751,6 +4405,36 @@
   // every keystroke it is given, so a listener that waits its turn never runs.
   window.addEventListener('keydown', ev => {
     if (!(ev.metaKey || ev.ctrlKey)) return;
+    // ⌘0 toggles Focus. Everything else below belongs to the strip and only
+    // means anything while Focus is on, so the wall's own keys are untouched.
+    if (ev.key === '0') {
+      ev.preventDefault(); ev.stopPropagation();
+      setFocusMode(!focusMode);
+      toast(focusMode ? 'Focus mode on' : 'Focus mode off - your wall is back');
+      return;
+    }
+    if (focusMode) {
+      const top = queue[0] || null;
+      // ⌘⏎ opens the next thing. ⌘⇧⏎ ANSWERS it without leaving where you are,
+      // and the two modifiers are deliberate: one of them types into a session.
+      if (ev.key === 'Enter') {
+        ev.preventDefault(); ev.stopPropagation();
+        if (!top) { toast('Nothing waiting'); return; }
+        if (ev.shiftKey) approveFromStrip(top); else focusOpen(top.sid);
+        return;
+      }
+      if (ev.key === '.') {
+        ev.preventDefault(); ev.stopPropagation();
+        if (top) snoozeItem(top); else toast('Nothing to snooze');
+        return;
+      }
+      if (!ev.shiftKey && ev.key >= '1' && ev.key <= '3') {
+        ev.preventDefault(); ev.stopPropagation();
+        const it = queue[Number(ev.key) - 1];
+        if (it) focusOpen(it.sid); else toast('Nothing in that slot');
+        return;
+      }
+    }
     if (!ev.shiftKey && ev.key >= '1' && ev.key <= '4') {
       const i = Number(ev.key) - 1;
       if (i < layout) { ev.preventDefault(); ev.stopPropagation(); setFocus(i); }
@@ -3763,6 +4447,48 @@
     }
   }, true);
 
+  if (btnFocus) {
+    btnFocus.addEventListener('click', () => setFocusMode(!focusMode));
+    // Restore the mode before the first render, so a reload lands you back in
+    // the run you were in rather than on a wall you then have to collapse again.
+    if (focusMode && !soloSid) {
+      document.body.classList.add('focus');
+      btnFocus.classList.add('on');
+      if (layout !== 1) { layout = 1; focused = 0; saveLayout(); }
+    } else {
+      focusMode = false;
+    }
+  }
+
+  // What a test is allowed to ask the page about itself. Read-only, and every
+  // one of them answers a question that can only be settled in a real browser:
+  // what is actually on the wire, what a warm pane actually believes its width
+  // is, and whether a switch actually took the warm path.
+  window.__mtsWarm   = () => warmSet.slice();
+  window.__mtsStream = () => streamSids();
+  window.__mtsActive = () => activeSid;
+  window.__mtsPanes  = () => Object.keys(panes).length;
+  window.__mtsCols   = sid => (panes[sid] ? panes[sid].term.cols : 0);
+  // Returns whether this switch took the warm path, decided before the switch
+  // rather than read back out of a log afterwards - every measurement is written
+  // from inside a requestAnimationFrame, so reading "the last one" races the
+  // frames a previous switch still has in flight.
+  window.__mtsOpen = sid => {
+    const warm = !!(panes[sid] && warmHold && panes[sid].container.parentNode === warmHold
+                    && activeSid && panes[activeSid] && sid !== activeSid);
+    focusOpen(sid);
+    return warm;
+  };
+  window.__mtsQueue  = () => queue.map(i => ({ sid: i.sid, kind: i.kind, head: i.headline }));
+  window.__mtsHasPane = sid => !!panes[sid];
+  window.__mtsAllSids = () => sessions.reduce((a, s) => (a[s.id] = 1, a), {});
+  window.__mtsSweep   = () => sweepPanes();
+
+  // A three-hour run visits far more sessions than a wall ever did, so the panes
+  // it leaves behind have to be collected. Cheap and infrequent: the sweep only
+  // ever disposes what nothing is looking at.
+  setInterval(sweepPanes, 60000);
+
   // ── surviving sleep ──────────────────────────────────────────────────────
   // Everything the machine had open across a sleep is suspect on the way out,
   // so re-establish rather than trust. Called from the wall-clock detector
@@ -3771,6 +4497,9 @@
   function onWake() {
     reviveStreams(STALE_MS, true);
     kickPolls();
+    // The display may have changed while the Mac was asleep, and every warm pane
+    // is mounted at the stage's geometry - which is now a different number.
+    if (focusMode) requestAnimationFrame(() => { sizeWarmHold(); mountWarm(); });
   }
   window.__mtsWake = onWake;
 

@@ -14,6 +14,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -70,24 +71,24 @@ def main():
         print("\nTHE HOOK STAMPS WHAT ONLY IT KNOWS")
         fire("PermissionRequest", {"tool_name": "Bash",
                                    "tool_input": {"command": "rm -rf build"}})
-        kind, head = tm._parse_webneed(opt("@webneed"))
+        kind, _ts, head = tm._parse_webneed(opt("@webneed"))
         check(kind == "approval", "a Bash permission is an approval")
         check(head == "rm -rf build", "and the headline is the command, not the tool name")
 
         fire("PreToolUse", {"tool_name": "ExitPlanMode", "tool_input": {"plan": "x"}})
-        kind, head = tm._parse_webneed(opt("@webneed"))
+        kind, _ts, head = tm._parse_webneed(opt("@webneed"))
         check(kind == "plan", "ExitPlanMode is a plan, which the pane cannot tell")
         check(opt("@webstate").startswith("attention"),
               "and it stamps attention, not working - the turn has STOPPED")
 
         fire("PreToolUse", {"tool_name": "AskUserQuestion",
                             "tool_input": {"questions": [{"question": "Which DB?"}]}})
-        kind, head = tm._parse_webneed(opt("@webneed"))
+        kind, _ts, head = tm._parse_webneed(opt("@webneed"))
         check(kind == "question" and head == "Which DB?", "a question carries the question")
 
         fire("PermissionRequest", {"tool_name": "Edit",
                                    "tool_input": {"file_path": "/a/b/server.py"}})
-        check(tm._parse_webneed(opt("@webneed"))[1] == "server.py",
+        check(tm._parse_webneed(opt("@webneed"))[2] == "server.py",
               "an edit names the file, basename only")
 
         print("\nAND CLEARS IT THE MOMENT IT IS ANSWERED")
@@ -96,10 +97,23 @@ def main():
         fire("PermissionRequest", {"tool_name": "Bash", "tool_input": {"command": "ls"}})
         check(opt("@webneed") != "", "(re-armed)")
         fire("Stop", {})
-        check(opt("@webneed") == "", "Stop clears it - the turn is over")
+        check(opt("@webneed") == "",
+              "Stop after a question clears it - nothing was built, so it is not news")
         fire("PermissionRequest", {"tool_name": "Bash", "tool_input": {"command": "ls"}})
         fire("PreToolUse", {"tool_name": "Grep", "tool_input": {"pattern": "x"}})
         check(opt("@webneed") == "", "an ordinary PreToolUse clears it too")
+
+        print("\nA TURN THAT DID WORK AND STOPPED IS NEWS, NOT SILENCE")
+        fire("PreToolUse", {"tool_name": "Grep", "tool_input": {"pattern": "x"}})
+        check(opt("@webstate").startswith("working"), "(working)")
+        fire("Stop", {})
+        kind, ts, head = tm._parse_webneed(opt("@webneed"))
+        check(kind == "done", "Stop after work stamps done - the build is ready for you")
+        check(ts > 0, "and dates it, so the strip can age it out")
+        check(opt("@webstate").startswith("idle"),
+              "while the DOT still goes green - done is news, not a demand")
+        fire("UserPromptSubmit", {})
+        check(opt("@webneed") == "", "and your next prompt clears it")
 
         print("\nTHE FIELD SURVIVES HOSTILE HEADLINES")
         fire("PermissionRequest", {"tool_name": "Bash",
@@ -109,7 +123,7 @@ def main():
         check("\t" not in raw, "and a tab cannot break the list-sessions format")
         fire("PermissionRequest", {"tool_name": "Bash",
                                    "tool_input": {"command": "x" * 500}})
-        check(len(tm._parse_webneed(opt("@webneed"))[1]) <= 90, "a long one is trimmed")
+        check(len(tm._parse_webneed(opt("@webneed"))[2]) <= 90, "a long one is trimmed")
 
         print("\nTHE READER PREFERS THE HOOK, AND FALLS BACK TO THE PANE")
         n = tm.session_need("s1", "plan|123|plan ready", "", "attention")
@@ -119,10 +133,25 @@ def main():
               "a GREEN session is never asked what it wants")
         check(tm.session_need("s1", "plan|123|x", "", "working") is None,
               "nor a yellow one")
-        check(tm._parse_webneed("") == ("", ""), "an absent stamp is not a need")
-        check(tm._parse_webneed("approval") == ("", ""), "nor a half-written one")
-        check(tm._parse_webneed("approval|1|") == ("approval", ""),
-              "an empty headline still carries the kind")
+        check(tm._parse_webneed("") == ("", 0.0, ""), "an absent stamp is not a need")
+        check(tm._parse_webneed("approval") == ("", 0.0, ""), "nor a half-written one")
+        check(tm._parse_webneed("approval|1|") == ("approval", 1.0, ""),
+              "an empty headline still carries the kind and the time")
+
+        print("\nDONE AGES OUT; A DEAD TURN SPEAKS UP")
+        now = time.time()
+        n = tm.session_need("s1", f"done|{now:.0f}|build green", "", "idle")
+        check(n and n["kind"] == "done" and n["headline"] == "build green",
+              "a fresh done reaches the strip even though the dot is green")
+        check(tm.session_need("s1", f"done|{now - 3600:.0f}|old news", "", "idle") is None,
+              "an hour-old one has stopped being news")
+        dead = tm.session_need("s1", "", "", "idle",
+                               webstate=f"working:{now - 600:.0f}")
+        check(dead is not None and dead["kind"] == "stuck",
+              "a working stamp that went stale while the dot fell back to idle is stuck")
+        check(tm.session_need("s1", "", "", "idle",
+                              webstate=f"working:{now:.0f}") is None,
+              "but a fresh working stamp on an idle dot is just a race, not a death")
 
         print("\nall_states ANSWERS ONLY FOR THE WAITING")
         real_socket = tm.TMUX_SOCKET
@@ -144,8 +173,8 @@ def main():
                 check(got is None,
                       "a stamp on a session the dots call idle adds no need "
                       f"(state={st['states'].get(sid)!r})")
-            check(all(st["states"].get(k) == "attention" for k in st["needs"]),
-                  "every session in needs is one the dots call attention")
+            check(all(st["states"].get(k) in ("attention", "idle") for k in st["needs"]),
+                  "nothing working or offline ever reaches the strip")
         finally:
             tm.TMUX_SOCKET = real_socket
     finally:

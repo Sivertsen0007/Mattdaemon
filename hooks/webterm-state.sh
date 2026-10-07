@@ -62,6 +62,39 @@ need() {
 }
 need_clear() { tmuxb set-option -u "@webneed"; }
 
+# The headline for a finished turn: the first line Claude actually said last.
+#
+# Read from the transcript rather than from the pane, because by the time Stop
+# fires the pane may already have scrolled the answer off, and because the
+# transcript gives the TEXT - not the box-drawing, the spinner and the token
+# counter that a capture would have to be stripped of.
+#
+# Deliberately quiet: no transcript, no jq, a half-written line - any of them
+# just produces an empty headline, and an item with no headline still says which
+# session finished. Bounded with tail so a transcript that has grown to tens of
+# megabytes over a long session is not read end to end on every Stop.
+last_said() {
+  _tp="$(printf '%s' "$JSON" | jq -r '.transcript_path // empty' 2>/dev/null)"
+  [ -n "$_tp" ] && [ -r "$_tp" ] || return 0
+  tail -n 400 "$_tp" 2>/dev/null \
+    | jq -r 'select(.type=="assistant")
+             | .message.content[]? | select(.type=="text") | .text' 2>/dev/null \
+    | grep -v '^[[:space:]]*$' | tail -n 1
+}
+
+# Was this session working before it stopped?
+#
+# The difference between "the build you set off is ready for you" and "you
+# pressed enter on an empty prompt". Only the first is news, and the strip is
+# a list of things that want you - so a Stop that followed no work clears the
+# stamp exactly as it always did.
+was_working() {
+  case "$(tmuxb show-options -v "@webstate" 2>/dev/null)" in
+    working*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 msg="$(printf '%s' "$JSON" | jq -r '.message // empty' 2>/dev/null)"
 tool="$(printf '%s' "$JSON" | jq -r '.tool_name // empty' 2>/dev/null)"
 
@@ -95,9 +128,21 @@ case "$EVENT" in
       *) stamp attention; need question "${msg:-wants your input}" ;;
     esac ;;
   Stop)
-    # Turn finished - whatever was asked has been answered.
-    stamp idle
-    need_clear ;;
+    # Turn finished - whatever was asked has been answered. But a turn that did
+    # real work and then stopped is the other thing the strip is for: "the build
+    # finished, your move". So the stamp is not cleared, it is rewritten as
+    # `done`, carrying the line Claude ended on.
+    #
+    # The order matters: was_working() reads @webstate, so it has to run BEFORE
+    # the stamp is overwritten with idle.
+    if was_working; then
+      _said="$(last_said)"
+      stamp idle
+      need done "${_said:-finished}"
+    else
+      stamp idle
+      need_clear
+    fi ;;
   SubagentStop)
     stamp idle ;;
   UserPromptSubmit|PostToolUse)

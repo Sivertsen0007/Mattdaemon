@@ -363,18 +363,27 @@ def _session_event_source(sid):
 #
 # So a background thread asks the box on its own clock and leaves the answer
 # here. Requests read this and return at local speed, always.
-_vps_snap = {"ts": 0.0, "sessions": [], "states": {}, "plans": {}, "files": {}}
+_vps_snap = {"ts": 0.0, "sessions": [], "states": {}, "needs": {},
+             "plans": {}, "files": {}}
 _vps_snap_lock = threading.Lock()
 _VPS_REFRESH = 3.0     # how often the poller asks the box
 _VPS_STALE = 25.0      # older than this and we stop calling the box online
 
 
 def _vps_snapshot():
-    """(online, sessions, states, plans, files) from the background poller."""
+    """The background poller's last answer about the box, as a dict.
+
+    A dict rather than a tuple because the box's half keeps growing a member -
+    states, then plans, then files, now needs - and every one of those grew a
+    `_st, _pl, _fi` at six call sites that do not care. A key the caller does
+    not read costs it nothing.
+
+    Keys: online, sessions, states, needs, plans, files.
+    """
     with _vps_snap_lock:
         snap = dict(_vps_snap)
-    online = bool(snap["ts"]) and (time.time() - snap["ts"]) < _VPS_STALE
-    return online, snap["sessions"], snap["states"], snap["plans"], snap["files"]
+    snap["online"] = bool(snap["ts"]) and (time.time() - snap["ts"]) < _VPS_STALE
+    return snap
 
 
 def _vps_poll_once():
@@ -393,8 +402,8 @@ def _vps_poll_once():
     with _vps_snap_lock:
         _vps_snap.update({
             "ts": time.time(), "sessions": rows,
-            "states": pre(states.get("states")), "plans": pre(states.get("plans")),
-            "files": pre(states.get("files")),
+            "states": pre(states.get("states")), "needs": pre(states.get("needs")),
+            "plans": pre(states.get("plans")), "files": pre(states.get("files")),
         })
 
 
@@ -467,7 +476,7 @@ def _merged_repos():
     hosts = {"local": {"repos": local.get("repos", []),
                        "default": local.get("default", ""), "online": True}}
 
-    online, _s, _st, _pl, _fi = _vps_snapshot()
+    online = _vps_snapshot()["online"]
     vps_online = bool(_vps_enabled() and online)
     hosts["vps"] = {"repos": [], "default": "", "online": vps_online}
     if vps_online:
@@ -510,7 +519,7 @@ def _merged_worktrees(with_dirty=False):
         "online": True,
     }}
 
-    online, _s, _st, _pl, _fi = _vps_snapshot()
+    online = _vps_snapshot()["online"]
     vps_online = bool(_vps_enabled() and online)
     hosts["vps"] = {"current_branch": "", "folder": "", "is_repo": True,
                     "max_sessions": 6, "online": vps_online}
@@ -561,7 +570,8 @@ def _merged_sessions():
         s["host"] = "local"
         out.append(s)
 
-    online, vps_sessions, _st, _pl, _fi = _vps_snapshot()
+    snap = _vps_snapshot()
+    online, vps_sessions = snap["online"], snap["sessions"]
     vps_info = {"enabled": _vps_enabled(), "online": _vps_enabled() and online,
                 "host": urlparse(VPS_BASE).netloc if VPS_BASE else ""}
     if vps_info["online"]:
@@ -577,14 +587,21 @@ def _merged_states():
     file shown with term-show get opened in the browser."""
     res = terminal_manager.all_states()
     states = dict(res.get("states", {}))
+    needs = dict(res.get("needs", {}))
     plans = dict(res.get("plans", {}))
     files = dict(res.get("files", {}))
-    online, _sess, vstates, vplans, vfiles = _vps_snapshot()
-    if _vps_enabled() and online:
-        states.update(vstates)
-        plans.update(vplans)
-        files.update(vfiles)
+    snap = _vps_snapshot()
+    if _vps_enabled() and snap["online"]:
+        states.update(snap["states"])
+        # A box running an older build sends no `needs` at all, and that is the
+        # degradation this half is designed around: its sessions keep their
+        # dots, and the strip falls back to a generic "needs you" off the dot
+        # colour. So the Mac can ship before the box does.
+        needs.update(snap.get("needs") or {})
+        plans.update(snap["plans"])
+        files.update(snap["files"])
     res["states"] = states
+    res["needs"] = needs
     res["plans"] = plans
     res["files"] = files
     return res
@@ -1049,7 +1066,8 @@ def bring_vps_to_local(sid, confirm=False, name=None):
     if host != "vps":
         return {"ok": False, "error": "that session is already on this Mac"}
 
-    online, vps_sessions, _states, _plans, _files = _vps_snapshot()
+    snap = _vps_snapshot()
+    online, vps_sessions = snap["online"], snap["sessions"]
     sess = next((s for s in vps_sessions if s.get("realid") == real), None)
     if not sess:
         return {"ok": False, "error": "no such session on the box"}
@@ -1303,7 +1321,8 @@ def _timing_summary():
 
 def health():
     stats = terminal_manager.view_stats() if terminal_manager else {}
-    online, vps_sessions, _st, _pl, _fi = _vps_snapshot()
+    snap = _vps_snapshot()
+    online, vps_sessions = snap["online"], snap["sessions"]
     with _vps_snap_lock:
         age = time.time() - _vps_snap["ts"] if _vps_snap["ts"] else None
     return {
@@ -2495,6 +2514,37 @@ def _run_handover_selftest():
     return 0
 
 
+def _run_needs_dump():
+    """Print the dot and the reason for every live session, and change nothing.
+
+    The reason is the half of Focus mode that can be WRONG - a dot is one of
+    four colours and is years old, a headline is a sentence scraped or stamped
+    about a specific prompt, and a card that misreads the question costs trust
+    the first time it happens. So this exists to be read against the real screens
+    rather than asserted against fixtures: run it, look at the sessions, and
+    judge whether each line is what that session would say about itself.
+
+    Read-only. It attaches no view, types nothing, and reports no size, so it
+    cannot disturb the sessions it is describing.
+    """
+    res = terminal_manager.all_states()
+    states, needs = res.get("states", {}), res.get("needs", {})
+    if not states:
+        print("no live sessions")
+        return 0
+    rows = terminal_manager.list_sessions().get("sessions", [])
+    name_of = {r.get("id"): r.get("name", "") for r in rows}
+    width = max((len(name_of.get(sid, sid)) for sid in states), default=10)
+    print(f"{'session'.ljust(width)}  {'dot'.ljust(9)}  {'kind'.ljust(9)}  source  headline")
+    for sid, st in sorted(states.items(), key=lambda kv: name_of.get(kv[0], kv[0])):
+        n = needs.get(sid) or {}
+        print(f"{name_of.get(sid, sid).ljust(width)}  {st.ljust(9)}  "
+              f"{(n.get('kind') or '-').ljust(9)}  "
+              f"{(n.get('source') or '-').ljust(6)}  {n.get('headline') or ''}")
+    print(f"\n{len(needs)} of {len(states)} sessions want you.")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Standalone local terminal server")
     parser.add_argument("--port", type=int, default=8722)
@@ -2514,6 +2564,9 @@ def main():
                         help="drive two real shells down one merged stream and "
                              "assert each one's output is tagged with its own "
                              "session, then exit")
+    parser.add_argument("--selftest-needs", action="store_true",
+                        help="print what every live session wants, and where "
+                             "that answer came from, then exit (read-only)")
     parser.add_argument("--selftest-handover", action="store_true",
                         help="exercise the VPS -> Mac handover's path map, brief "
                              "header and git step against real throwaway repos, "
@@ -2535,6 +2588,9 @@ def main():
         sys.exit(_run_multi_selftest())
     if args.selftest_setup:
         sys.exit(_run_setup_selftest())
+    if args.selftest_needs:
+        _import_manager()
+        sys.exit(_run_needs_dump())
     if args.selftest_handover:
         _import_manager()
         sys.exit(_run_handover_selftest())
