@@ -78,10 +78,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
         DispatchQueue.main.async { [weak self] in self?.showWindow() }
     }
 
-    /// A WKWebView with no UI delegate silently drops `window.open`, so the
-    /// plan panel's "open in your browser" button did nothing at all. There is
-    /// no second window to give it, and a plan belongs in a real browser
-    /// anyway, so hand the URL to the default one and decline the new view.
+    /// A WKWebView with no UI delegate silently drops `window.open`, which is
+    /// how the page opens anything a session produces. There is no second web
+    /// view to give it - what a session makes belongs in a real browser - so
+    /// hand the URL to the default one and decline the new view. The bridge's
+    /// openExternal covers the same ground for anything without a click behind
+    /// it; this covers plain window.open, including from a popped-out window.
     func webView(_ webView: WKWebView,
                  createWebViewWith configuration: WKWebViewConfiguration,
                  for navigationAction: WKNavigationAction,
@@ -143,6 +145,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
     //     when this bridge is absent (i.e. in a plain browser).
     //   popOut     - a session gets its own real window.
     //   copy       - text onto the system pasteboard.
+    //   openExternal - a URL into the default browser. The page cannot do this
+    //     itself: WebKit only honours window.open while a user gesture is live,
+    //     so a plan that finished on its own would be dropped in silence.
     //
     // Everything here is best-effort and one-way: an unknown command is logged
     // and ignored, so a newer page against an older app degrades rather than
@@ -161,6 +166,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
             popOut(sid: sid,
                    path: body["url"] as? String ?? "/?solo=\(sid)",
                    title: body["title"] as? String ?? sid)
+        case "openExternal":
+            guard let raw = body["url"] as? String, let url = URL(string: raw),
+                  url.scheme == "http" || url.scheme == "https" else { return }
+            NSWorkspace.shared.open(url)
         case "copy":
             // The terminal's selection is xterm's own, not a DOM selection, so
             // WebKit's Copy has nothing to put on the pasteboard. The page

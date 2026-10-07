@@ -266,29 +266,14 @@
 
   /* ---- terminal ---- */
   .term-wrap{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
-  /* ---- visual plan, opened beside the terminal ---- */
-  .plan-pane{display:none;flex:0 0 44%;min-width:320px;max-width:62%;
-    flex-direction:column;background:var(--surface);border-left:1px solid var(--border)}
-  .plan-pane.open{display:flex}
-  .plan-head{height:36px;flex:none;display:flex;align-items:center;gap:8px;
-    padding:0 8px 0 14px;border-bottom:1px solid var(--border);background:var(--surface2)}
-  .plan-tabs{flex:1;min-width:0;display:flex;align-items:center;gap:4px;overflow-x:auto;
-    scrollbar-width:none}
-  .plan-tabs::-webkit-scrollbar{display:none}
-  .ptab{flex:none;max-width:190px;display:flex;align-items:center;gap:7px;
-    padding:3px 7px 3px 9px;border:1px solid transparent;border-radius:5px;
-    background:transparent;color:var(--inkDim);cursor:pointer;
-    font-family:inherit;font-size:11px;letter-spacing:.04em}
-  .ptab:hover{background:#1c1c1f;color:var(--inkMute)}
-  .ptab.active{background:#202023;border-color:#33333a;color:var(--ink)}
-  .ptab .ptab-label{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .ptab .ptab-x{flex:none;font-size:9px;opacity:.45}
-  .ptab .ptab-x:hover{opacity:1;color:var(--red)}
-  .plan-btn{flex:none;width:22px;height:22px;line-height:20px;text-align:center;padding:0;
-    background:transparent;border:1px solid var(--border);border-radius:5px;
-    color:var(--inkMute);cursor:pointer;font-size:11px;font-family:inherit}
-  .plan-btn:hover{border-color:#3a3a3f;color:var(--ink);background:#202023}
-  .plan-frame{flex:1;width:100%;border:0;background:#fff}
+  .sb-mc{width:100%;justify-content:center;margin:2px 0 6px}
+  #mcOverlay{position:fixed;inset:0;z-index:1000;background:#0d0d0e;display:none;flex-direction:column}
+  #mcOverlay.open{display:flex}
+  .mc-head{height:38px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--border);background:#111}
+  .mc-title{font-weight:600;color:var(--ink);font-size:13px;margin-right:auto}
+  .mc-btn{background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--inkMute);width:28px;height:26px;cursor:pointer;font-size:12px}
+  .mc-btn:hover{color:var(--ink);background:#202023}
+  #mcFrame{flex:1;width:100%;border:0;background:#fff}
   .term-head{height:36px;flex:none;display:flex;align-items:center;gap:10px;padding:0 15px;
     border-bottom:1px solid var(--border);background:#0d0d0e}
   .term-head .chip{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 9px;
@@ -386,7 +371,6 @@
      popped-out pane, so everything that rearranges the wall belongs to the
      window that still has one. */
   body.solo .sidebar,
-  body.solo .plan-pane,
   body.solo #layouts,
   body.solo #btnPop{display:none}
   body.solo .term.grid{padding:0}
@@ -403,6 +387,7 @@
       <div class="sess-list" id="sessList"></div>
 
       <div class="sess-count" id="sessCount">0 sessions</div>
+      <button class="tb-btn sb-mc" id="btnMC" title="Mission Control - the agent dashboard">&#9678; Mission Control</button>
       <div class="side-foot">
         <button class="tb-btn sb-reconnect" id="btnReload">&#8635; Reconnect</button>
         <button class="tb-btn gear" id="btnSettings" title="Settings - folder, Claude account, VPS">&#9881;</button>
@@ -421,7 +406,7 @@
           </button>
         </div>
         <button class="attach" id="btnAttach" title="Upload an image or file into this session (or paste / drop it)">&#8613; Attach</button>
-        <button class="attach" id="btnPlan" title="Show the visual plan for this session" style="display:none">&#9635; Plan</button>
+        <button class="attach" id="btnPlan" title="Open this session's plan or file in your browser" style="display:none">&#9635; Plan</button>
         <button class="attach" id="btnPop" title="Open the focused session in its own window (&#8984;&#8679;O)">&#8599; Pop out</button>
         <span class="chip" id="termChip">&#9679; idle</span>
       </div>
@@ -430,15 +415,15 @@
       </div>
     </div>
 
-    <!-- visual plan, opened beside the terminal -->
-    <aside class="plan-pane" id="planPane">
-      <div class="plan-head">
-        <div class="plan-tabs" id="planTabs"></div>
-        <button class="plan-btn" id="planPop" title="Open in your browser">&#8599;</button>
-        <button class="plan-btn" id="planClose" title="Hide the panel">&#10005;</button>
+    <!-- Mission Control - the agent dashboard, in a full overlay -->
+    <div id="mcOverlay">
+      <div class="mc-head">
+        <span class="mc-title">&#9678; Mission Control</span>
+        <button class="mc-btn" id="mcPop" title="Open in your browser">&#8599;</button>
+        <button class="mc-btn" id="mcClose" title="Back to terminals">&#10005;</button>
       </div>
-      <iframe class="plan-frame" id="planFrame" title="Preview"></iframe>
-    </aside>
+      <iframe id="mcFrame" title="Mission Control" src="about:blank"></iframe>
+    </div>
   </div>
 </div>
 
@@ -780,9 +765,8 @@
     });
     const fit = new FitAddon.FitAddon();
     term.loadAddon(fit);
-    // URLs in the output become clickable, and open in the preview panel rather
-    // than the browser - the point is to see what a session is building without
-    // leaving it. The panel's arrow button kicks the current tab out to Safari.
+    // URLs in the output become clickable, and open in your browser - the app
+    // has no web view of its own to put them in, deliberately.
     try {
       term.loadAddon(new WebLinksAddon.WebLinksAddon((ev, uri) => openLink(uri)));
     } catch {}
@@ -903,8 +887,8 @@
   //
   // The id says which reports are ours, so resizing ourselves replaces our last
   // report instead of competing with it. Without it, narrowing the terminal and
-  // widening it again - opening the preview panel does exactly that - leaves the
-  // window pinned at the narrow width.
+  // widening it again - a layout change or a pop-out does exactly that - leaves
+  // the window pinned at the narrow width.
   //
   // The heartbeat below is the other half: the server only re-evaluates when a
   // report arrives, so with nothing reporting, whatever width it last settled on
@@ -1434,8 +1418,9 @@
     chipEl.innerHTML = '<span style="color:' + stateColor(st) + '">&#9679;</span> ' + label;
   }
 
-  // ── preview panel ────────────────────────────────────────────────────────
-  // One tabbed panel beside the terminal for anything a session produces:
+  // ── what a session produces → your browser ────────────────────────
+  // Three things a session can hand you, and all three open in your real
+  // browser - never inside the app:
   //
   //   plan  /farm writes plans/<slug>/plan.html, then shared/term-plan stamps
   //         "<nonce>:<path>" onto the session's tmux @webplan option
@@ -1443,19 +1428,21 @@
   //   link  a URL in the output, clicked (xterm's web-links addon)
   //
   // The two stamps arrive on the states poll, which is the only signal that
-  // either is ready. The app had both available and did nothing with them, so
-  // plans and artefacts were being produced and were unreachable from here.
-  // The nonce is what makes re-stamping the same path re-open it.
-  const planPane  = document.getElementById('planPane');
-  const planFrame = document.getElementById('planFrame');
-  const planTabs  = document.getElementById('planTabs');
-  const btnPlan   = document.getElementById('btnPlan');
+  // either is ready. The nonce is what makes re-stamping the same path count as
+  // something new to open.
+  //
+  // This used to open in an iframe panel beside the terminal, and an iframe was
+  // the wrong place for all of it. Half the web refuses to be framed and the
+  // panel renders that refusal as permanent blankness; a visual plan is a
+  // full-width document that wants a window; and nothing in a frame can be
+  // scrolled away from the terminal, kept open while you work, bookmarked,
+  // printed or dropped in a message. A browser does every one of those already,
+  // so it is the browser's job.
+  const btnPlan = document.getElementById('btnPlan');
 
   let plans = {}, files = {};   // sid -> "<nonce>:<path>", straight from the poll
   let stampSeen = {};           // "<kind>:<sid>" -> the stamp already acted on
   let stampPrimed = false;      // has the first poll been recorded yet?
-  let tabs = [];                // [{id, title, url}] - shared across sessions
-  let tabActive = null;
 
   function splitStamp(raw) {
     const i = (raw || '').indexOf(':');
@@ -1463,8 +1450,8 @@
                     : { nonce: raw.slice(0, i), path: raw.slice(i + 1) };
   }
 
-  /// The nonce rides in the URL so a re-stamp reloads the frame while an
-  /// unchanged one does not.
+  /// The nonce rides in the URL so a re-stamp is a fresh page rather than one
+  /// the browser serves from its cache.
   function stampUrl(endpoint, sid, raw) {
     const { nonce, path } = splitStamp(raw);
     if (!path) return '';
@@ -1478,74 +1465,31 @@
   const planName = p => p.replace(/^plans\//, '').replace(/\/[^/]*\.html$/, '');
   const fileName = p => p.split('/').pop() || p;
 
-  /// Opening or closing the preview panel changes the width of every pane, not
-  /// just the focused one, so the whole wall re-fits.
-  function refitActive() {
-    requestAnimationFrame(refitAll);
-  }
-
-  function openTab(id, title, url) {
-    if (!url) return;
-    const existing = tabs.find(t => t.id === id);
-    if (existing) { existing.title = title; existing.url = url; }
-    else tabs.push({ id, title, url });
-    tabActive = id;
-    planPane.classList.add('open');
-    renderTabs();
-    showTab();
-    refitActive();
-  }
-
-  function closeTab(id) {
-    const i = tabs.findIndex(t => t.id === id);
-    if (i === -1) return;
-    tabs.splice(i, 1);
-    if (!tabs.length) { hidePreview(); tabActive = null; planTabs.innerHTML = ''; return; }
-    if (tabActive === id) tabActive = tabs[Math.min(i, tabs.length - 1)].id;
-    renderTabs();
-    showTab();
-  }
-
-  function hidePreview() {
-    planPane.classList.remove('open');
-    planFrame.setAttribute('src', 'about:blank');
-    refitActive();
-  }
-
-  function showTab() {
-    const t = tabs.find(x => x.id === tabActive);
-    if (!t) return;
-    if (planFrame.getAttribute('src') !== t.url) planFrame.setAttribute('src', t.url);
-  }
-
-  function renderTabs() {
-    planTabs.innerHTML = '';
-    for (const t of tabs) {
-      const b = document.createElement('button');
-      b.className = 'ptab' + (t.id === tabActive ? ' active' : '');
-      b.title = t.title;
-      const l = document.createElement('span');
-      l.className = 'ptab-label';
-      l.textContent = t.title;
-      const x = document.createElement('span');
-      x.className = 'ptab-x';
-      x.innerHTML = '&#10005;';
-      x.addEventListener('click', ev => { ev.stopPropagation(); closeTab(t.id); });
-      b.appendChild(l); b.appendChild(x);
-      b.addEventListener('click', () => { tabActive = t.id; renderTabs(); showTab(); });
-      planTabs.appendChild(b);
-    }
+  /// Hand a URL to the default browser.
+  ///
+  /// Through the bridge whenever there is one, because WebKit only lets
+  /// `window.open` through while a user gesture is live: a plan that lands
+  /// while you are reading the terminal has no gesture behind it, and that call
+  /// would be swallowed without a sound. The bridge has no such rule - it is
+  /// NSWorkspace on the other side - so it works for a click and for something
+  /// that simply finished. Outside the app (this page in a plain browser) there
+  /// is no bridge, and `window.open` is exactly right.
+  function openExternal(url, note) {
+    let abs = url;
+    try { abs = new URL(url, location.href).href; } catch {}
+    const bridge = window.webkit && window.webkit.messageHandlers
+                && window.webkit.messageHandlers.mts;
+    if (bridge) bridge.postMessage({ cmd: 'openExternal', url: abs });
+    else if (!window.open(abs, '_blank')) { toast('Your browser blocked that window'); return; }
+    if (note) toast(note);
   }
 
   /// A term-link URL points at the box's dashboard, whose file endpoint wants a
-  /// token this page does not have and should not carry. Route those through
-  /// our own proxy, which holds it; anything else loads as it stands.
+  /// token neither this page nor your browser has. Route those through this
+  /// server's own proxy, which holds it; anything else opens as it stands.
   function previewUrlFor(raw) {
     try {
       const u = new URL(raw, location.href);
-      // Something the box produced: fetched through this server's proxy, which
-      // also keeps its token out of the page - and makes it same-origin, so the
-      // panel can show it.
       if (vpsInfo.host && u.host === vpsInfo.host
           && (u.pathname === '/api/terminal/file' || u.pathname === '/api/terminal/plan')) {
         return u.pathname + '?host=vps&path='
@@ -1555,61 +1499,19 @@
     } catch { return raw; }
   }
 
-  /// Can the preview panel actually show this, or does it belong in a browser?
-  ///
-  /// The panel is an iframe, and the wider web declines to be framed. An
-  /// artifact answers with `x-frame-options: SAMEORIGIN`, a news site with
-  /// `DENY`, and the browser throws the response away - so clicking a link left
-  /// the panel open and permanently blank, which is not a loading problem, it
-  /// is a refusal. Nor can it be detected and recovered from: to script, a
-  /// refused cross-origin load and a perfectly good one look identical. So this
-  /// is decided by where the link points, not by trying it and hoping.
-  ///
-  /// What the panel is FOR still goes in it: what a session is building. That
-  /// is this server's own artifacts and plans (including the box's, proxied
-  /// above), and a dev server a session started on loopback - `ready on :3000`
-  /// is exactly the thing you want beside the terminal rather than in Safari.
-  /// Everything else opens where it works.
-  function framesHere(u) {
-    if (u.origin === location.origin) return true;
-    if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
-    const h = u.hostname;
-    return h === '127.0.0.1' || h === 'localhost' || h === '::1' || h === '[::1]';
-  }
-
   function openLink(raw) {
-    const url = previewUrlFor(raw);
-    let target = null;
-    try { target = new URL(url, location.href); } catch {}
-
-    if (!target || !framesHere(target)) {
-      // In the .app this reaches the WKUIDelegate, which hands it to your
-      // default browser and declines to open a second web view.
-      // Deliberately the same call the panel's pop-out button makes, feature
-      // string and all: that one is known to reach the delegate, and a
-      // 'noopener' hint is enough for WebKit to route a new window elsewhere.
-      window.open(raw, '_blank');
-      toast('Opened in your browser');
-      return;
-    }
-
-    let label = raw;
-    try {
-      label = decodeURIComponent((target.searchParams.get('path') || target.pathname)
-                                 .split('/').pop() || '') || target.host;
-    } catch {}
-    openTab('link:' + raw, label, url);
+    openExternal(previewUrlFor(raw), 'Opened in your browser');
   }
 
-  /// Called on every states poll. Only a stamp that CHANGES opens a tab, and
+  /// Called on every states poll. Only a stamp that CHANGES opens anything, and
   /// only for the session being watched, so something landing in a background
-  /// session never yanks the panel away from what is in front of you.
+  /// session never throws a window at you.
   ///
   /// The first poll only records what it finds, or everything stamped days ago
-  /// would pop open on launch. It records the empty stamps too: a session with
+  /// would open on launch. It records the empty stamps too: a session with
   /// nothing yet is precisely the one about to produce its first, and skipping
-  /// those made that first one look already-seen - which left the panel shut
-  /// for the case that matters most.
+  /// those made that first one look already-seen - which lost the case that
+  /// matters most.
   function syncStamps() {
     const sweep = (map, kind, url, name) => {
       for (const sid in map) {
@@ -1618,7 +1520,9 @@
         if (!stampPrimed) { stampSeen[key] = stamp; continue; }
         if (stampSeen[key] === stamp) continue;
         stampSeen[key] = stamp;
-        if (stamp && sid === activeSid) openTab(key, name(splitStamp(stamp).path), url(sid));
+        if (stamp && sid === activeSid) {
+          openExternal(url(sid), name(splitStamp(stamp).path) + ' - opened in your browser');
+        }
       }
     };
     sweep(plans, 'plan', planUrl, planName);
@@ -1628,24 +1532,29 @@
   }
 
   /// The button is only worth showing when this session has actually made
-  /// something, or when there is a panel to bring back.
+  /// something - it is how you get back to a plan you have closed.
   function planOnSwitch() {
     const has = splitStamp(plans[activeSid]).path || splitStamp(files[activeSid]).path;
-    btnPlan.style.display = (has || tabs.length) ? '' : 'none';
+    btnPlan.style.display = has ? '' : 'none';
   }
 
   btnPlan.addEventListener('click', () => {
-    if (planPane.classList.contains('open')) { hidePreview(); return; }
-    const p = planUrl(activeSid), f = fileUrl(activeSid);
-    if (p) openTab('plan:' + activeSid, planName(splitStamp(plans[activeSid]).path), p);
-    else if (f) openTab('file:' + activeSid, fileName(splitStamp(files[activeSid]).path), f);
-    else if (tabs.length) { planPane.classList.add('open'); renderTabs(); showTab(); refitActive(); }
+    const p = planUrl(activeSid) || fileUrl(activeSid);
+    if (p) openExternal(p, 'Opened in your browser');
   });
-  document.getElementById('planClose').addEventListener('click', hidePreview);
-  document.getElementById('planPop').addEventListener('click', () => {
-    const t = tabs.find(x => x.id === tabActive);
-    if (t) window.open(t.url, '_blank');
-  });
+
+  // ── Mission Control (agent dashboard) - opens localhost:4820 in an overlay ──
+  (function(){
+    const MC_URL = 'http://localhost:4820';
+    const ov = document.getElementById('mcOverlay'), fr = document.getElementById('mcFrame');
+    if (!ov || !fr) return;
+    const open = () => { if (fr.getAttribute('src') !== MC_URL) fr.setAttribute('src', MC_URL); ov.classList.add('open'); };
+    const close = () => ov.classList.remove('open');
+    document.getElementById('btnMC').addEventListener('click', open);
+    document.getElementById('mcClose').addEventListener('click', close);
+    document.getElementById('mcPop').addEventListener('click', () => window.open(MC_URL, '_blank'));
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && ov.classList.contains('open')) close(); });
+  })();
 
   // ── sidebar ──────────────────────────────────────────────────────────────
   // Status classes/colours mirror the :3333 dashboard: green = done/waiting for

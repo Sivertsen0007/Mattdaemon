@@ -77,6 +77,14 @@ _CONTENT_TYPES = {
     ".woff2": "font/woff2",
     ".ttf": "font/ttf",
     ".txt": "text/plain; charset=utf-8",
+    # What term-show hands over, now that it opens in a browser: a type the
+    # browser knows is the difference between showing the thing and downloading
+    # it. A PDF report is the common one.
+    ".pdf": "application/pdf",
+    ".md": "text/plain; charset=utf-8",
+    ".csv": "text/plain; charset=utf-8",
+    ".webp": "image/webp",
+    ".avif": "image/avif",
 }
 
 
@@ -148,7 +156,14 @@ def _split_sid(sid):
 
 
 def _vps_headers():
-    return {"Authorization": "Bearer " + VPS_TOKEN}
+    # The User-Agent is not decoration. The box is reached through a Cloudflare
+    # tunnel, and the tunnel answers 403 to urllib's default
+    # "Python-urllib/3.x" - every call, sessions and plans alike, with a token
+    # that is perfectly good. The app then shows the box as simply offline,
+    # which is the one explanation that is not true. Any ordinary product token
+    # passes, so send one.
+    return {"Authorization": "Bearer " + VPS_TOKEN,
+            "User-Agent": "Mattdaemon/1.0 (macOS)"}
 
 
 def _vps_get_bytes(path):
@@ -344,7 +359,7 @@ def _merged_states():
 
     `plans` and `files` ride along on the same poll: they carry each session's
     @webplan and @webfile stamps, which is how a plan written by /farm and a
-    file shown with term-show reach the preview panel."""
+    file shown with term-show get opened in the browser."""
     res = terminal_manager.all_states()
     states = dict(res.get("states", {}))
     plans = dict(res.get("plans", {}))
@@ -1199,10 +1214,11 @@ class TerminalHandler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def _serve_artifact(self):
-        """Serve a file a session produced, for the preview panel.
+        """Serve a file a session produced, for the browser to show.
 
         The path arrives either from a session's @webfile stamp (shared/term-show)
-        or from a term-link URL clicked in the terminal. A local file must resolve
+        or from a term-link URL clicked in the terminal. Either way the page
+        hands this URL to your default browser rather than opening it itself. A local file must resolve
         inside the repo the app was started on - the terminal can reach the whole
         disk, but this endpoint has no reason to. A vps: session's file lives on
         the box, so that one is fetched from the box's own endpoint, which also
@@ -1232,7 +1248,7 @@ class TerminalHandler(BaseHTTPRequestHandler):
         self._serve_file(target, _ctype_for(target))
 
     def _serve_plan(self):
-        """Serve a visual-plan HTML file for the side panel.
+        """Serve a visual-plan HTML file, for the browser to show.
 
         The path comes from a session's @webplan stamp, written by
         shared/term-plan when /farm produces a plan, and is restricted to
