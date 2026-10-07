@@ -438,6 +438,10 @@
   /* A mode, not a fifth layout. It forces one pane and puts the 2/3/4 wall back
      untouched on the way out, because `tiles` is always four long whatever is
      on screen. */
+  /* Focus mode is one session and the queue above it. The session list is the
+     thing you are explicitly not using - the strip is how you move - so it goes,
+     and the terminal takes the width. ⌘0 brings the whole wall back. */
+  body.focus .sidebar{display:none}
   body.focus .layouts{display:none}
   .focus-btn.on{background:#202023;color:var(--ink);border-color:#3a3a3f}
   .strip{flex:none;display:none;gap:8px;padding:8px 8px 0;align-items:stretch;
@@ -480,6 +484,11 @@
   .strip-foot{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:0 4px;
     font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--inkDim);
     white-space:nowrap;align-self:center}
+  .strip-foot .going{color:var(--ink)}
+  .strip-foot .auto{background:transparent;border:1px solid var(--border);border-radius:5px;
+    color:var(--inkDim);cursor:pointer;font:inherit;font-size:10px;padding:1px 7px}
+  .strip-foot .auto.on{color:var(--stIdle);border-color:#2a4a35}
+  .strip-foot .auto:hover{background:#202023}
   .strip-empty{align-self:center;font-family:'JetBrains Mono',monospace;font-size:11px;
     color:var(--inkDim);padding:8px 4px}
 
@@ -2143,6 +2152,7 @@
   /// would decide for you, and get it wrong.
   function focusOpen(sid) {
     if (!sid || sid === activeSid) return;
+    cancelHandoff();
     const t0 = performance.now();
     clearNews(sid);
     const body = termHost.querySelector('.tile .tile-body');
@@ -2327,7 +2337,7 @@
 
   function renderStrip() {
     if (!stripEl) return;
-    if (!focusMode) { stripEl.replaceChildren(); return; }
+    if (!focusMode) { stripEl.replaceChildren(); stripFoot = null; return; }
     const frag = document.createDocumentFragment();
     if (pinnedItem) frag.appendChild(stripCard(pinnedItem, 0, true));
     queue.slice(0, STRIP_SLOTS).forEach((it, i) => frag.appendChild(stripCard(it, i + 1, false)));
@@ -2337,15 +2347,123 @@
       e.textContent = 'Nothing waiting - everything is working or already answered.';
       frag.appendChild(e);
     }
-    const foot = document.createElement('div');
-    foot.className = 'strip-foot';
-    const waiting = queue.length + (pinnedItem ? 1 : 0);
-    const more = queue.length > STRIP_SLOTS ? '  ·  +' + (queue.length - STRIP_SLOTS) + ' behind' : '';
-    const sw = lastSwitchMs === null ? ''
-             : '  ·  ' + (lastSwitchWarm ? 'warm' : 'cold') + ' ' + lastSwitchMs + 'ms';
-    foot.textContent = cleared + ' cleared · ' + waiting + ' waiting' + more + sw;
-    frag.appendChild(foot);
+    stripFoot = document.createElement('div');
+    stripFoot.className = 'strip-foot';
+    frag.appendChild(stripFoot);
     stripEl.replaceChildren(frag);
+    renderFoot();
+  }
+
+  /// The footer, on its own, because the handoff counts down in it four times a
+  /// second and rebuilding the cards at that rate would flicker the hover off
+  /// whatever you were about to click.
+  function renderFoot() {
+    if (!stripFoot) return;
+    stripFoot.replaceChildren();
+    if (handoff) {
+      const left = Math.max(0, Math.ceil((handoff.until - Date.now()) / 1000));
+      const s2 = sessions.find(x => x.id === handoff.sid);
+      const go = document.createElement('span');
+      go.className = 'going';
+      go.textContent = '\u2192 ' + (s2 ? s2.name : handoff.sid) + '  \u00b7  '
+                     + handoff.kind + '  \u00b7  ' + left;
+      const stay = document.createElement('span');
+      stay.textContent = '  \u00b7  any key to stay';
+      stripFoot.appendChild(go);
+      stripFoot.appendChild(stay);
+      return;
+    }
+    const waiting = queue.length + (pinnedItem ? 1 : 0);
+    const more = queue.length > STRIP_SLOTS ? '  \u00b7  +' + (queue.length - STRIP_SLOTS) + ' behind' : '';
+    const sw = lastSwitchMs === null ? ''
+             : '  \u00b7  ' + (lastSwitchWarm ? 'warm' : 'cold') + ' ' + lastSwitchMs + 'ms';
+    stripFoot.appendChild(document.createTextNode(
+      cleared + ' cleared \u00b7 ' + waiting + ' waiting' + more + sw + '  \u00b7  '));
+    const t = document.createElement('button');
+    t.className = 'auto' + (autoAdvance ? ' on' : '');
+    t.textContent = autoAdvance ? 'auto-advance on' : 'auto-advance off';
+    t.title = autoAdvance
+      ? 'Moves you to the next one when this session has nothing for you'
+      : 'You move yourself - the strip only tells you';
+    t.addEventListener('click', () => {
+      autoAdvance = !autoAdvance;
+      savePref('autoAdvance', autoAdvance);
+      if (!autoAdvance) cancelHandoff();
+      renderFoot();
+      toast(autoAdvance ? 'Auto-advance on' : 'Auto-advance off');
+    });
+    stripFoot.appendChild(t);
+  }
+
+  // ── moving you on by itself ──────────────────────────────────────────────
+  //
+  // The plan said never auto-switch the stage, and the reason was good: being
+  // moved while you are reading is worse than any amount of clicking. Mathias
+  // asked for it anyway, which is the right call for what Focus mode is FOR -
+  // you are not watching sessions, you are clearing a queue, and the clicking is
+  // the part that makes a three-hour run feel like work.
+  //
+  // So it moves you, under three conditions that between them remove the failure
+  // the original rule was protecting against:
+  //
+  //   1. NEVER off a session that has something for you. If the one on stage is
+  //      pinned - it wants an answer, or it has just finished and that IS the
+  //      thing you came to read - nothing happens. You leave when you are done.
+  //   2. NEVER while you are typing, and never in the few seconds after.
+  //   3. NEVER without saying so first. A short countdown runs in the footer and
+  //      ANY key cancels it, which then holds auto-advance off for a minute so
+  //      it does not immediately ask again.
+  //
+  // What is left is the case it is for: the session in front of you is working
+  // or already dealt with, something else is blocked on you, and you would have
+  // clicked anyway.
+  const HANDOFF_MS = 3200;        // how long the countdown runs
+  const TYPING_QUIET_MS = 4000;   // how long after a keystroke it stays out of the way
+  const HOLD_AFTER_STAY_MS = 60000;
+
+  let autoAdvance = loadPref('autoAdvance', true) !== false;
+  let handoff = null;             // { sid, kind, until, timer }
+  let autoHoldUntil = 0;
+  let stripFoot = null;
+
+  function cancelHandoff(byUser) {
+    if (!handoff) return false;
+    clearInterval(handoff.timer);
+    handoff = null;
+    if (byUser) autoHoldUntil = Date.now() + HOLD_AFTER_STAY_MS;
+    renderFoot();
+    return true;
+  }
+
+  function startHandoff(item) {
+    handoff = { sid: item.sid, kind: item.kind, until: Date.now() + HANDOFF_MS, timer: null };
+    handoff.timer = setInterval(() => {
+      if (!handoff) return;
+      if (Date.now() < handoff.until) { renderFoot(); return; }
+      const sid = handoff.sid;
+      clearInterval(handoff.timer);
+      handoff = null;
+      focusOpen(sid);
+    }, 250);
+    renderFoot();
+  }
+
+  /// Called by the poll that rebuilt the queue. Never by anything else: this is
+  /// the one place that decides to move you, so it is the one place to read.
+  function tickAutoAdvance() {
+    const now = Date.now();
+    if (!focusMode || !autoAdvance || document.hidden
+        || now < autoHoldUntil
+        || pinnedItem                                   // this one still wants you
+        || now - lastInputAt < TYPING_QUIET_MS) {       // you are mid-sentence
+      cancelHandoff();
+      return;
+    }
+    const next = queue[0];
+    if (!next) { cancelHandoff(); return; }
+    if (handoff && handoff.sid === next.sid) return;    // already on its way
+    cancelHandoff();
+    startHandoff(next);
   }
 
   // ── turning it on ────────────────────────────────────────────────────────
@@ -2383,6 +2501,7 @@
       // would re-parent containers out from under the hold.
       if (warmHold) for (const c of [...warmHold.children]) warmHold.removeChild(c);
       warmSet = []; warmKey = ''; warmAt = 0;
+      cancelHandoff();
       if (preFocusLayout && [1, 2, 3, 4].includes(preFocusLayout)) layout = preFocusLayout;
       saveLayout();
       render();
@@ -4286,6 +4405,7 @@
     buildQueue();
     syncWarmSet();
     renderLive();
+    tickAutoAdvance();
   }
 
   // ── new session ──────────────────────────────────────────────────────────
@@ -4480,6 +4600,10 @@
     return warm;
   };
   window.__mtsQueue  = () => queue.map(i => ({ sid: i.sid, kind: i.kind, head: i.headline }));
+  window.__mtsHandoff = () => handoff && { sid: handoff.sid, kind: handoff.kind };
+  window.__mtsAuto    = on => { autoAdvance = on; autoHoldUntil = 0; };
+  window.__mtsAutoOn  = () => autoAdvance;
+  window.__mtsTick    = () => tickAutoAdvance();
   window.__mtsHasPane = sid => !!panes[sid];
   window.__mtsAllSids = () => sessions.reduce((a, s) => (a[s.id] = 1, a), {});
   window.__mtsSweep   = () => sweepPanes();
@@ -4488,6 +4612,13 @@
   // it leaves behind have to be collected. Cheap and infrequent: the sweep only
   // ever disposes what nothing is looking at.
   setInterval(sweepPanes, 60000);
+
+  // A countdown you can see is only honest if anything you do stops it. Capture
+  // phase and on the window, because the keyboard belongs to xterm the moment a
+  // pane has focus and a listener that waits its turn is never called.
+  window.addEventListener('keydown', () => {
+    if (cancelHandoff(true)) toast('Staying here');
+  }, true);
 
   // ── surviving sleep ──────────────────────────────────────────────────────
   // Everything the machine had open across a sleep is suspect on the way out,

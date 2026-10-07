@@ -156,6 +156,12 @@ def main():
             page.click("#btnFocus")
             check(page.eval_on_selector("body", "b => b.classList.contains('focus')"),
                   "Focus is a mode on the body, not a fifth layout")
+            check(page.evaluate("() => window.__mtsAutoOn()") is True,
+                  "auto-advance is on by default - Focus mode is for clearing a queue")
+            # Off for everything below: it moves the stage on its own, which is
+            # the point of it and noise in every test that is about something
+            # else. It gets switched back on in its own section.
+            page.evaluate("() => window.__mtsAuto(false)")
             check(page.evaluate("() => document.querySelector('#term').dataset.layout") == "1",
                   "and it forces one pane")
             # Two polls, because an item has to survive a second look before it
@@ -253,11 +259,17 @@ def main():
             # no pane, is not on the wire, and opening it is the old path: build
             # the pane, re-open the stream, let the server replay every session
             # on it. That is what a switch used to cost every single time.
-            check(page.evaluate("sid => window.__mtsHasPane(sid)", sids["Echo"]) is False,
-                  "Echo has no pane at all - it is on nobody's strip")
-            took_cold = page.evaluate("sid => window.__mtsOpen(sid)", sids["Echo"])
+            # Whichever session has no pane yet - which one that is depends on
+            # the order tmux happened to list them in, so it is asked for rather
+            # than assumed.
+            cold_sid = page.evaluate(
+                "() => Object.keys(window.__mtsAllSids())"
+                ".find(s => !window.__mtsHasPane(s)) || null")
+            check(cold_sid is not None,
+                  "there is a session nobody has opened, with no pane at all")
+            took_cold = page.evaluate("sid => window.__mtsOpen(sid)", cold_sid)
             page.wait_for_function("sid => window.__mtsActive() === sid",
-                                   arg=sids["Echo"], timeout=15000)
+                                   arg=cold_sid, timeout=15000)
             cold_wire = page.evaluate("() => window.__mtsStream().slice().sort().join(',')")
             check(took_cold is False, "a session off the strip takes the cold path")
             # The number that matters is not the millisecond count - both paths
@@ -307,6 +319,59 @@ def main():
                       if k in before and int(seen[-1][k]) < int(before[k])}
             check(not shrunk, f"no window got narrower than it started ({shrunk})")
 
+            print("\nTHE SESSION LIST GOES")
+            check(page.eval_on_selector(".sidebar", "e => getComputedStyle(e).display")
+                  == "none", "in Focus the list is hidden - the strip is how you move")
+
+            print("\nIT MOVES YOU ON, BUT ONLY WHEN IT SHOULD")
+            # Park on the session that wants nothing: you are done here, three
+            # others are blocked, and this is exactly the moment it is for.
+            page.evaluate("sid => { window.__mtsAuto(true); window.__mtsOpen(sid); }",
+                          sids["Delta"])
+            page.wait_for_function("() => window.__mtsQueue().length === 3", timeout=20000)
+
+            # Typing is the one thing that must always win. A keystroke lands in
+            # the pane the moment before the poll, and being moved out from under
+            # it is the whole reason the plan said never to do this.
+            page.keyboard.press("x")
+            page.evaluate("() => window.__mtsTick()")
+            check(page.evaluate("() => window.__mtsHandoff()") is None,
+                  "it will not move you while you are typing")
+
+            page.wait_for_timeout(4300)
+            page.evaluate("() => { window.__mtsAuto(true); window.__mtsTick(); }")
+            h = page.evaluate("() => window.__mtsHandoff()")
+            check(h and h["kind"] == "approval",
+                  f"once you have stopped, it says where it is taking you ({h})")
+            check("any key to stay" in page.eval_on_selector(".strip-foot", "e => e.textContent"),
+                  "and says how to stop it, in the footer, while it counts down")
+
+            # Any key means stay. Not just "cancel this one" - it holds off, so it
+            # cannot immediately ask again and turn into a nag.
+            was = page.evaluate("() => window.__mtsActive()")
+            page.keyboard.press("y")
+            check(page.evaluate("() => window.__mtsHandoff()") is None, "any key stops it")
+            page.evaluate("() => window.__mtsTick()")
+            check(page.evaluate("() => window.__mtsHandoff()") is None,
+                  "and it stays stopped rather than asking again on the next poll")
+            check(page.evaluate("() => window.__mtsActive()") == was, "you are still where you were")
+
+            # Left alone, it takes you.
+            page.evaluate("() => { window.__mtsAuto(true); window.__mtsTick(); }")
+            target2 = page.evaluate("() => window.__mtsQueue()[0].sid")
+            page.wait_for_function("sid => window.__mtsActive() === sid",
+                                   arg=target2, timeout=15000)
+            check(True, "left alone, it takes you to the next one by itself")
+
+            # And now you are IN the approval, it must stop: this one wants
+            # something from you, and being moved off it is the failure the
+            # original "never auto-switch" rule existed to prevent.
+            page.wait_for_function("() => window.__mtsQueue().length === 2", timeout=20000)
+            page.evaluate("() => { window.__mtsAuto(true); window.__mtsTick(); }")
+            check(page.evaluate("() => window.__mtsHandoff()") is None,
+                  "but never off a session that still wants you")
+            page.evaluate("() => window.__mtsAuto(false)")
+
             print("\nAND THE RUN DOES NOT LEAK")
             check(page.evaluate("() => window.__mtsPanes()") <= 8,
                   "mounted panes stay under the cap")
@@ -342,6 +407,8 @@ def main():
             page.click("#btnFocus")
             check(page.evaluate("() => document.querySelectorAll('#warmHold > div').length") == 0,
                   "leaving Focus puts every warm pane back")
+            check(page.eval_on_selector(".sidebar", "e => getComputedStyle(e).display")
+                  != "none", "and the session list comes back with it")
             check(not errors, f"still clean{' - ' + errors[0] if errors else ''}")
             browser.close()
     finally:
