@@ -156,12 +156,6 @@ def main():
             page.click("#btnFocus")
             check(page.eval_on_selector("body", "b => b.classList.contains('focus')"),
                   "Focus is a mode on the body, not a fifth layout")
-            check(page.evaluate("() => window.__mtsAutoOn()") is True,
-                  "auto-advance is on by default - Focus mode is for clearing a queue")
-            # Off for everything below: it moves the stage on its own, which is
-            # the point of it and noise in every test that is about something
-            # else. It gets switched back on in its own section.
-            page.evaluate("() => window.__mtsAuto(false)")
             check(page.evaluate("() => document.querySelector('#term').dataset.layout") == "1",
                   "and it forces one pane")
             # Two polls, because an item has to survive a second look before it
@@ -264,13 +258,21 @@ def main():
             # no pane, is not on the wire, and opening it is the old path: build
             # the pane, re-open the stream, let the server replay every session
             # on it. That is what a switch used to cost every single time.
-            # Whichever session has no pane yet - which one that is depends on
-            # the order tmux happened to list them in, so it is asked for rather
-            # than assumed.
+            # A session with no pane. Whether one of the existing five still
+            # qualifies depends on which ones the warm set happened to mount, so
+            # a fresh one is started rather than hoping: the cold path is about
+            # a session that is genuinely not on the wire, and that has to be
+            # true for the measurement to mean anything.
             cold_sid = page.evaluate(
                 "() => Object.keys(window.__mtsAllSids())"
                 ".find(s => !window.__mtsHasPane(s)) || null")
-            check(cold_sid is not None,
+            if cold_sid is None:
+                fresh = post("/api/terminal/start", {"name": "Cold", "autostart": False})
+                cold_sid = fresh["session"]["id"]
+                sids["Cold"] = cold_sid
+                page.wait_for_function("sid => window.__mtsAllSids()[sid]",
+                                       arg=cold_sid, timeout=30000)
+            check(page.evaluate("sid => !window.__mtsHasPane(sid)", cold_sid) is True,
                   "there is a session nobody has opened, with no pane at all")
             took_cold = page.evaluate("sid => window.__mtsOpen(sid)", cold_sid)
             page.wait_for_function("sid => window.__mtsActive() === sid",
@@ -353,54 +355,36 @@ def main():
             check(page.evaluate("() => window.__mtsCols(window.__mtsActive())") == wide,
                   "with the stage back to its full width")
 
-            print("\nIT MOVES YOU ON, BUT ONLY WHEN IT SHOULD")
-            # Park on the session that wants nothing: you are done here, three
-            # others are blocked, and this is exactly the moment it is for.
-            page.evaluate("sid => { window.__mtsAuto(true); window.__mtsOpen(sid); }",
-                          sids["Delta"])
+            print("\nNOTHING MOVES THE STAGE BUT YOU")
+            # Focus mode used to advance by itself, and it got the one case that
+            # matters wrong: you open a chat that has just FINISHED, opening it
+            # clears its `done` card, the card going is what un-pins the
+            # session - and the guard that was meant to keep you there stops
+            # applying. It moved you mid-read, away from the answer you opened
+            # it for. "Finishing reading" is a thought, not an event, so no
+            # extra condition fixes it. Leaving is your decision now, full stop.
+            page.evaluate("sid => window.__mtsOpen(sid)", sids["Delta"])
             page.wait_for_function("() => window.__mtsQueue().length === 3", timeout=20000)
+            parked = page.evaluate("() => window.__mtsActive()")
+            # Several polls, with three things on the strip shouting for you.
+            page.wait_for_timeout(9000)
+            check(page.evaluate("() => window.__mtsActive()") == parked,
+                  "a stage with nothing waiting on it is still left alone")
+            check(page.evaluate("() => window.__mtsQueue().length") == 3,
+                  "(and the strip still has all three)")
 
-            # Typing is the one thing that must always win. A keystroke lands in
-            # the pane the moment before the poll, and being moved out from under
-            # it is the whole reason the plan said never to do this.
-            page.keyboard.press("x")
-            page.evaluate("() => window.__mtsTick()")
-            check(page.evaluate("() => window.__mtsHandoff()") is None,
-                  "it will not move you while you are typing")
-
-            page.wait_for_timeout(4300)
-            page.evaluate("() => { window.__mtsAuto(true); window.__mtsTick(); }")
-            h = page.evaluate("() => window.__mtsHandoff()")
-            check(h and h["kind"] == "approval",
-                  f"once you have stopped, it says where it is taking you ({h})")
-            check("any key to stay" in page.eval_on_selector(".strip-foot", "e => e.textContent"),
-                  "and says how to stop it, in the footer, while it counts down")
-
-            # Any key means stay. Not just "cancel this one" - it holds off, so it
-            # cannot immediately ask again and turn into a nag.
-            was = page.evaluate("() => window.__mtsActive()")
-            page.keyboard.press("y")
-            check(page.evaluate("() => window.__mtsHandoff()") is None, "any key stops it")
-            page.evaluate("() => window.__mtsTick()")
-            check(page.evaluate("() => window.__mtsHandoff()") is None,
-                  "and it stays stopped rather than asking again on the next poll")
-            check(page.evaluate("() => window.__mtsActive()") == was, "you are still where you were")
-
-            # Left alone, it takes you.
-            page.evaluate("() => { window.__mtsAuto(true); window.__mtsTick(); }")
-            target2 = page.evaluate("() => window.__mtsQueue()[0].sid")
+            # The exact regression: sit in the finished one and read it.
+            done_sid = page.evaluate(
+                "() => (window.__mtsQueue().find(i => i.kind === 'done') || {}).sid")
+            check(done_sid is not None, "there is a finished session to sit in")
+            page.evaluate("sid => window.__mtsOpen(sid)", done_sid)
             page.wait_for_function("sid => window.__mtsActive() === sid",
-                                   arg=target2, timeout=15000)
-            check(True, "left alone, it takes you to the next one by itself")
-
-            # And now you are IN the approval, it must stop: this one wants
-            # something from you, and being moved off it is the failure the
-            # original "never auto-switch" rule existed to prevent.
-            page.wait_for_function("() => window.__mtsQueue().length === 2", timeout=20000)
-            page.evaluate("() => { window.__mtsAuto(true); window.__mtsTick(); }")
-            check(page.evaluate("() => window.__mtsHandoff()") is None,
-                  "but never off a session that still wants you")
-            page.evaluate("() => window.__mtsAuto(false)")
+                                   arg=done_sid, timeout=15000)
+            check(page.eval_on_selector_all(".strip .strip-item.pinned", "e => e.length") == 0,
+                  "opening it clears its card - which is what used to unpin it")
+            page.wait_for_timeout(9000)
+            check(page.evaluate("() => window.__mtsActive()") == done_sid,
+                  "and you are STILL there, reading, with approvals waiting on the strip")
 
             print("\nAND THE RUN DOES NOT LEAK")
             check(page.evaluate("() => window.__mtsPanes()") <= 8,
