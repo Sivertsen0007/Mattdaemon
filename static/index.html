@@ -375,14 +375,6 @@
 
   /* ---- terminal ---- */
   .term-wrap{flex:1;min-width:0;display:flex;flex-direction:column;background:var(--bg)}
-  .sb-mc{width:100%;justify-content:center;margin:2px 0 6px}
-  #mcOverlay{position:fixed;inset:0;z-index:1000;background:#0d0d0e;display:none;flex-direction:column}
-  #mcOverlay.open{display:flex}
-  .mc-head{height:38px;flex:none;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--border);background:#111}
-  .mc-title{font-weight:600;color:var(--ink);font-size:13px;margin-right:auto}
-  .mc-btn{background:transparent;border:1px solid var(--border);border-radius:5px;color:var(--inkMute);width:28px;height:26px;cursor:pointer;font-size:12px}
-  .mc-btn:hover{color:var(--ink);background:#202023}
-  #mcFrame{flex:1;width:100%;border:0;background:#fff}
   .term-head{height:36px;flex:none;display:flex;align-items:center;gap:10px;padding:0 15px;
     border-bottom:1px solid var(--border);background:#0d0d0e}
   .term-head .chip{margin-left:auto;font-family:'JetBrains Mono',monospace;font-size:10px;padding:3px 9px;
@@ -585,7 +577,6 @@
       <div class="sess-list" id="sessList"></div>
 
       <div class="sess-count" id="sessCount">0 sessions</div>
-      <button class="tb-btn sb-mc" id="btnMC" title="Mission Control - the agent dashboard">&#9678; Mission Control</button>
       <div class="side-foot">
         <button class="tb-btn sb-reconnect" id="btnReload">&#8635; Reconnect</button>
         <button class="tb-btn gear" id="btnSettings" title="Settings - folder, Claude account, VPS">&#9881;</button>
@@ -615,15 +606,6 @@
         <div class="placeholder" id="termPlaceholder">No session &mdash; create one to begin.</div>
         <div class="warm-hold" id="warmHold" aria-hidden="true"></div>
       </div>
-    </div>
-
-    <div id="mcOverlay">
-      <div class="mc-head">
-        <span class="mc-title">&#9678; Mission Control</span>
-        <button class="mc-btn" id="mcPop" title="Open in your browser">&#8599;</button>
-        <button class="mc-btn" id="mcClose" title="Back to terminals">&#10005;</button>
-      </div>
-      <iframe id="mcFrame" title="Mission Control" src="about:blank"></iframe>
     </div>
   </div>
 </div>
@@ -2630,26 +2612,16 @@
     if (p) openExternal(p, 'Opened in your browser');
   });
 
-  // Mission Control (agent dashboard) - opens localhost:4820 in an overlay
-  (function(){
-    const MC_URL = 'http://localhost:4820';
-    const ov = document.getElementById('mcOverlay'), fr = document.getElementById('mcFrame');
-    if (!ov || !fr) return;
-    const open = () => { if (fr.getAttribute('src') !== MC_URL) fr.setAttribute('src', MC_URL); ov.classList.add('open'); };
-    const close = () => ov.classList.remove('open');
-    document.getElementById('btnMC').addEventListener('click', open);
-    document.getElementById('mcClose').addEventListener('click', close);
-    document.getElementById('mcPop').addEventListener('click', () => window.open(MC_URL, '_blank'));
-    document.addEventListener('keydown', e => { if (e.key === 'Escape' && ov.classList.contains('open')) close(); });
-    // Mission Control (in the iframe) asks the host to run a session here.
-    // MC stays local; the terminal runs via Mattdaemon (VPS by default).
-    window.addEventListener('message', ev => {
-      const d = ev.data || {};
-      if (!d || d.source !== 'mission-control') return;
-      if (d.type === 'open-terminal') { close(); try { newSession(d.host || 'vps', false, 'claude'); } catch (e) {} }
-      else if (d.type === 'close') { close(); }
-    });
-  })();
+  // Mission Control used to open here, in a full-screen iframe over the
+  // terminals, with a button under the session list. Removed 2026-10-13: it is
+  // a local app on :4820 that only this Mac runs, and the app is used by people
+  // who have no Mission Control at all - so the button was a dead end for them
+  // and a second front door for nobody. MC itself is untouched and opens in a
+  // browser like anything else.
+  //
+  // The postMessage listener went with it. Its only sender was MC inside that
+  // iframe, asking the host to start a session; a separate browser tab has no
+  // window reference here and could never reach it.
 
   // ── sidebar ──────────────────────────────────────────────────────────────
   // Status classes/colours mirror the :3333 dashboard: green = done/waiting for
