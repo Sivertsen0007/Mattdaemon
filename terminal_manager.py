@@ -543,6 +543,11 @@ def _pane_tail(low):
 # an approval sat green - the one thing the dot exists to tell you.
 _CHOICE_RE = re.compile(r"^\s*[\u276f\u203a]\s*\d+[.)]\s+\S", re.M)
 
+# "y/n" as a standalone token. A bare substring test matched paths:
+# "tooling/glossary/nl.json" contains y/n, so a session whose brief named that
+# file sat red all day asking nothing.
+_YN_RE = re.compile(r"(?<![\w/])y/n(?![\w/])")
+
 
 # Claude's live spinner row: a star glyph, a gerund ending in an ellipsis, then a
 # parenthesised timer - "✽ Schlepping… (4m 57s · ↓ 2.2k tokens)". Newer Claude
@@ -860,7 +865,7 @@ def _pane_signals(sid, activity):
          or "no, and tell claude what to do differently" in tail
          or "no, and tell codex what to do differently" in tail
          or bool(_CHOICE_RE.search(tail))
-         or "y/n" in tail or "(y/n)" in tail or "[y/n]" in tail
+         or bool(_YN_RE.search(tail))
          or "press enter to continue" in tail
          # Codex's approval footer. The caret shape above catches the same
          # screen, but this one survives a box long enough to push its options
