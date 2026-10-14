@@ -544,6 +544,17 @@ def _pane_tail(low):
 _CHOICE_RE = re.compile(r"^\s*[\u276f\u203a]\s*\d+[.)]\s+\S", re.M)
 
 
+# Claude's live spinner row: a star glyph, a gerund ending in an ellipsis, then a
+# parenthesised timer - "✽ Schlepping… (4m 57s · ↓ 2.2k tokens)". Newer Claude
+# Code no longer prints "esc to interrupt", so this row is the pane's only proof
+# that a turn is running. It matters most in auto mode: PermissionRequest stamps
+# `attention`, auto mode then approves the call itself, and no hook fires again
+# until PostToolUse - so a long approved command (a 5-minute prod promote) sat
+# red asking for an approval nobody needed to give. The finished form "✻ Worked
+# for 2m 3s" has no ellipsis, so an idle pane does not match.
+_SPINNER_RE = re.compile(r"^\s*[\u00b7\u2722\u2733\u2736\u273b\u273d*]\s+[^\s\u2026]+\u2026\s+\(", re.M)
+
+
 # ── Why a waiting pane is waiting (inference, not fact) ─────────────────────
 #
 # The Claude Code hook is the EXACT source for this (see _parse_need): it knows
@@ -857,6 +868,7 @@ def _pane_signals(sid, activity):
          or "press enter to confirm" in tail),
     )
     signals = signals + (_pane_reason(raw_tail, tail) if signals[1] else ("", ""))
+    signals = signals + (bool(_SPINNER_RE.search(raw_tail)),)
     if key:
         with _pane_cache_lock:
             _pane_cache[sid] = (key, signals, time.time())
@@ -887,6 +899,10 @@ def classify_session(sid, loop_raw="", cmd="", pane_pid="", proc_kids=None,
     interrupt, prompt_waiting = signals[0], signals[1]
     ws, ws_ts = _parse_webstate((webstate or "").strip().lower())
     if interrupt:
+        return "working"
+    # A spinner outranks the hook's `attention` but not a box on screen: the
+    # stamp can be left over from a permission auto mode already granted.
+    if len(signals) > 4 and signals[4] and not prompt_waiting:
         return "working"
     # Needs you: a permission / y-n prompt in the live region, OR the hook caught
     # a Notification / PermissionRequest (more reliable than scraping pane text).
