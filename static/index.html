@@ -242,14 +242,33 @@
   .sess.dragging{opacity:.35}
   .sess.drop-before{box-shadow:inset 0 2px 0 var(--accent)}
   .sess.drop-after{box-shadow:inset 0 -2px 0 var(--accent)}
-  /* ---- saved-for-later folder ---- */
-  .sess-section.sec-saved{cursor:pointer;user-select:none}
-  .sess-section.sec-saved:hover .sec-host{color:var(--ink)}
-  .sess-section.sec-saved.drop-in{box-shadow:inset 0 0 0 1px var(--accent);border-radius:5px}
-  .sess-section .sec-caret{flex:none;font-size:9px;color:var(--inkDim);width:9px}
-  .sess-section .sec-count{flex:none;font-size:10px;color:var(--inkDim);
-    background:#1c1c1f;padding:2px 6px;border-radius:4px;letter-spacing:0}
-  .sess.saved{opacity:.75}
+  /* ---- user folders (Saved for later, loops, ...) ---- */
+  .folder{display:flex;align-items:center;gap:8px;padding:7px 8px;border-radius:6px;cursor:pointer;
+    color:var(--inkMute);font:500 12.5px 'JetBrains Mono',monospace;user-select:none;
+    border:1px solid transparent}
+  .folder:hover{background:#17171a;color:var(--ink)}
+  .folder:focus-visible{outline:1px solid #6a6a72;outline-offset:1px}
+  .folder.drop-in{border-color:var(--accent);background:#1a1a1d;color:var(--ink)}
+  .folder .caret{flex:none;width:9px;font-size:8px;color:var(--inkDim);transition:transform .12s}
+  .folder.open .caret{transform:rotate(90deg)}
+  .folder svg{flex:none;width:15px;height:15px;color:var(--inkDim)}
+  .folder.open svg{color:var(--inkMute)}
+  .folder .fname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .folder .fname[contenteditable="true"]{outline:1px solid #45454b;border-radius:3px;padding:0 3px;
+    cursor:text;color:var(--ink)}
+  /* one dot per session while shut, so a red one is never hidden in a folder */
+  .folder .mini{display:flex;gap:3px;align-items:center}
+  .folder .mini .sdot{width:6px;height:6px;border-radius:50%;flex:none;box-shadow:none}
+  /* a quiet folder: no dots, nothing on the Focus strip - out of mind */
+  .folder .quiet{flex:none;font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:var(--inkDim)}
+  .sess .sdot.s-quiet{background:#3a3a40;box-shadow:none;animation:none}
+  .folder .count{flex:none;font-size:10px;color:var(--inkDim);background:#1c1c1f;
+    padding:2px 6px;border-radius:4px}
+  .newf{display:flex;align-items:center;gap:8px;margin-top:4px;padding:7px 8px;border-radius:6px;
+    border:1px dashed var(--border);color:var(--inkDim);font:12px 'JetBrains Mono',monospace;
+    cursor:pointer;background:transparent;width:100%;text-align:left}
+  .newf:hover{color:var(--ink);border-color:#3a3a3f}
+  .newf svg{flex:none;width:15px;height:15px}
   .sdot.s-idle{background:var(--stIdle);box-shadow:0 0 6px rgba(34,197,94,.4)}
   .sdot.s-offline{background:var(--stOffline)}
   .sdot.s-working,.sdot.s-looping{background:var(--stWorking);
@@ -613,11 +632,22 @@
 <!-- right-click menu for session rows -->
 <div class="ctx" id="ctxMenu">
   <button id="ctxRename"><span class="k">&#9998;</span> Rename</button>
-  <button id="ctxSave"><span class="k">&#9776;</span> Save for later</button>
   <button id="ctxSend"><span class="k">&#8593;</span> Send to VPS</button>
   <button id="ctxBring"><span class="k">&#8595;</span> Bring to Mac</button>
   <div class="sep"></div>
+  <div class="head">Move to folder</div>
+  <div id="ctxFolders"></div>
+  <div class="sep"></div>
   <button id="ctxClose" class="danger"><span class="k">&#10005;</span> Close session</button>
+</div>
+
+<!-- right-click menu for folder rows -->
+<div class="ctx" id="folderMenu">
+  <button data-act="toggle"><span class="k">&#9662;</span> <span>Collapse</span></button>
+  <button data-act="quiet"><span class="k">&#9681;</span> <span>Hide status dots</span></button>
+  <button data-act="rename"><span class="k">&#9998;</span> Rename</button>
+  <div class="sep"></div>
+  <button data-act="delete" class="danger"><span class="k">&#10005;</span> Delete folder</button>
 </div>
 
 <!-- which agent "+ New" starts. Same clothes as the right-click menu. -->
@@ -1982,7 +2012,7 @@
 
     for (const sid in needs) {
       const n = needs[sid];
-      if (!n || popped.has(sid)) continue;
+      if (!n || popped.has(sid) || isQuiet(sid)) continue;
       const kind = n.kind || 'question';
       // A hook stamp carries the moment the turn stopped. A pane scrape does
       // not, and inventing one would be the single thing a scraped item must
@@ -1999,7 +2029,7 @@
     for (const [map, isPlan] of [[plans, true], [files, false]]) {
       for (const sid in map) {
         const stamp = map[sid];
-        if (!stamp || popped.has(sid)) continue;
+        if (!stamp || popped.has(sid) || isQuiet(sid)) continue;
         const at = firstSeenAt(sid + '|published|' + stamp, now);
         if (now - at > NEWS_TTL) continue;
         const path = splitStamp(stamp).path;
@@ -2666,10 +2696,33 @@
   }
 
   let sessOrder = loadPref('order', []);            // sids, in the dragged order
-  let savedSids = new Set(loadPref('saved', []));
-  let savedOpen = loadPref('savedOpen', false);
 
-  const isSaved = sid => savedSids.has(sid);
+  // Folders the user makes ("Saved for later", "Website loop", ...). An ordered
+  // list of {id, name, open}, plus folderOf: sid -> folder id. A session in a
+  // folder keeps running exactly as before; it is only drawn elsewhere.
+  let folders  = loadPref('folders', null);
+  let folderOf = loadPref('folderOf', null) || {};
+  function saveFolders() {
+    savePref('folders', folders);
+    savePref('folderOf', folderOf);
+  }
+  // First run after the upgrade: the old single saved-for-later list becomes a
+  // folder of that name, with the same sessions in it and the same open state.
+  if (!Array.isArray(folders)) {
+    const fid = 'f' + Date.now().toString(36);
+    folders = [{ id: fid, name: 'Saved for later', open: !!loadPref('savedOpen', false) }];
+    for (const sid of loadPref('saved', [])) folderOf[sid] = fid;
+    saveFolders();
+  }
+  // Drop memberships pointing at a folder that no longer exists.
+  for (const sid in folderOf)
+    if (!folders.some(f => f.id === folderOf[sid])) delete folderOf[sid];
+
+  const isSaved = sid => !!folderOf[sid];           // "in any folder"
+  const folderById = id => folders.find(f => f.id === id) || null;
+  // A quiet folder is one you have chosen not to think about: its sessions run
+  // on, but draw no status dot and never reach the Focus strip.
+  const isQuiet = sid => !!(folderOf[sid] && (folderById(folderOf[sid]) || {}).quiet);
 
   /// Sessions never dragged keep their natural order and sit after the ones
   /// that were (Array#sort is stable, so returning 0 leaves them alone).
@@ -2689,7 +2742,6 @@
     return {
       local: shown.filter(s => s.host !== 'vps').sort(byUserOrder),
       vps:   shown.filter(s => s.host === 'vps').sort(byUserOrder),
-      saved: sessions.filter(s =>  isSaved(s.id)).sort(byUserOrder),
     };
   }
 
@@ -2698,10 +2750,14 @@
     return s.local[0] || s.vps[0] || null;
   }
 
-  function setSaved(sid, on) {
-    if (on) savedSids.add(sid); else savedSids.delete(sid);
-    savePref('saved', [...savedSids]);
-    if (on) {
+  /// Move a session into a folder, or out of every folder with fid = null.
+  function moveToFolder(sid, fid) {
+    const was = folderOf[sid] || null;
+    if (fid) folderOf[sid] = fid; else delete folderOf[sid];
+    saveFolders();
+    // Only leaving the loose list takes it off the wire; folder to folder is
+    // just a relabel, and opening it from the folder is still allowed.
+    if (fid && !was) {
       // Stashed means off the wire too: drop the pane rather than hold a stream
       // open for days. tmux keeps the session running, and opening it again
       // re-attaches and redraws.
@@ -2772,8 +2828,10 @@
       const r = row.getBoundingClientRect();
       const from = dragSid;
       clearDropMarks();
-      // Dropping a stashed session among the live ones brings it back.
-      if (from && isSaved(from) && !isSaved(s.id)) setSaved(from, false);
+      // Dropping onto a row also moves it into that row's folder (or out of
+      // one, onto a loose row), so reordering inside a folder just works.
+      const to = folderOf[s.id] || null;
+      if (from && (folderOf[from] || null) !== to) moveToFolder(from, to);
       applyDrop(from, s.id, ev.clientY > r.top + r.height / 2);
     });
   }
@@ -2791,7 +2849,7 @@
     makeDraggable(row, s);
 
     const dot = document.createElement('span');
-    dot.className = 'sdot ' + dotClass(s.id);
+    dot.className = 'sdot ' + (isQuiet(s.id) ? 's-quiet' : dotClass(s.id));
 
     const nm = document.createElement('span');
     nm.className = 'sname';
@@ -2801,7 +2859,7 @@
 
     // Why it is red, when we know. The chip carries the kind because that is
     // what fits; the sentence goes in the tooltip, where length costs nothing.
-    const need = needOf(s.id);
+    const need = isQuiet(s.id) ? null : needOf(s.id);
     if (need) {
       const chip = document.createElement('span');
       chip.className = 'need';
@@ -2879,33 +2937,90 @@
     return h;
   }
 
-  /// The saved-for-later folder. Always present, even empty, so there is
-  /// somewhere to drag a session to; click the header to fold it open or shut.
-  function savedHeader(count) {
+  // ── user folders ──────────────────────────────────────────────────────────
+  const FOLDER_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" '
+    + 'stroke-width="1.3" aria-hidden="true"><path d="M1.75 4.25c0-.55.45-1 1-1h3.4l1.5 '
+    + '1.6h5.6c.55 0 1 .45 1 1v6.4c0 .55-.45 1-1 1H2.75c-.55 0-1-.45-1-1z"/></svg>';
+  // Most urgent first, so the dots on a shut folder read left to right.
+  const ST_RANK = { attention: 0, working: 1, looping: 1, idle: 2, offline: 3 };
+  const byUrgency = (a, b) =>
+    (ST_RANK[states[a.id] || 'idle'] ?? 2) - (ST_RANK[states[b.id] || 'idle'] ?? 2);
+
+  function moveToast(s, fid) {
+    const f = folderById(fid);
+    toast(f ? 'Moved "' + s.name + '" to ' + f.name
+            : 'Moved "' + s.name + '" back to ' + (s.host === 'vps' ? 'VPS' : 'This Mac'));
+  }
+
+  /// One folder row. Always present, even empty, so there is somewhere to drag
+  /// to; click to fold it open or shut, double-click the name to rename.
+  function folderHeader(f, kids) {
     const h = document.createElement('div');
-    h.className = 'sess-section sec-saved';
+    h.className = 'folder' + (f.open ? ' open' : '');
+    h.tabIndex = 0;
+    h.dataset.f = f.id;
 
     const caret = document.createElement('span');
-    caret.className = 'sec-caret';
-    caret.innerHTML = (savedOpen && count) ? '&#9660;' : '&#9654;';
+    caret.className = 'caret';
+    caret.innerHTML = '&#9654;';
+    h.appendChild(caret);
+    h.insertAdjacentHTML('beforeend', FOLDER_SVG);
 
-    const l = document.createElement('span');
-    l.className = 'sec-host';
-    l.textContent = 'Saved for later';
+    const nm = document.createElement('span');
+    nm.className = 'fname';
+    nm.textContent = f.name;
+    h.appendChild(nm);
+
+    if (f.quiet) {
+      const q = document.createElement('span');
+      q.className = 'quiet';
+      q.textContent = 'quiet';
+      q.title = 'Status dots hidden - right-click to show them again';
+      h.appendChild(q);
+    } else if (!f.open && kids.length) {
+      const mini = document.createElement('span');
+      mini.className = 'mini';
+      for (const s of [...kids].sort(byUrgency).slice(0, 5)) {
+        const d = document.createElement('span');
+        d.className = 'sdot ' + dotClass(s.id);
+        mini.appendChild(d);
+      }
+      h.appendChild(mini);
+    }
 
     const c = document.createElement('span');
-    c.className = 'sec-count';
-    c.textContent = count;
+    c.className = 'count';
+    c.textContent = kids.length;
+    h.appendChild(c);
 
-    h.appendChild(caret); h.appendChild(l); h.appendChild(c);
-
-    h.addEventListener('click', () => {
-      savedOpen = !savedOpen;
-      savePref('savedOpen', savedOpen);
+    const toggle = () => {
+      f.open = !f.open;
+      saveFolders();
       renderSessions();
+    };
+    // A double-click on the name renames. It cannot be a dblclick listener: the
+    // first click folds the folder and redraws the list, so the second lands on
+    // a new node and dblclick never fires. The second click instead undoes the
+    // fold and opens the fresh row's name for typing.
+    h.addEventListener('click', ev => {
+      if (nm.getAttribute('contenteditable') === 'true') return;
+      toggle();
+      if (ev.detail === 2 && ev.target.closest('.fname')) {
+        const fresh = sessListEl.querySelector('.folder[data-f="' + f.id + '"] .fname');
+        if (fresh) startFolderRename(fresh, f);
+      }
+    });
+    h.addEventListener('keydown', ev => {
+      if (nm.getAttribute('contenteditable') === 'true') return;
+      if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); toggle(); }
+    });
+    h.addEventListener('contextmenu', ev => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openFolderMenu(ev.clientX, ev.clientY, nm, f);
     });
     h.addEventListener('dragover', ev => {
-      if (!dragSid || isSaved(dragSid)) return;
+      if (!dragSid || folderOf[dragSid] === f.id) return;
       ev.preventDefault();
       ev.dataTransfer.dropEffect = 'move';
       h.classList.add('drop-in');
@@ -2915,9 +3030,84 @@
       ev.preventDefault();
       const from = dragSid;
       clearDropMarks();
-      if (from && !isSaved(from)) setSaved(from, true);
+      if (!from || folderOf[from] === f.id) return;
+      moveToFolder(from, f.id);
+      const s = sessions.find(x => x.id === from);
+      if (s) moveToast(s, f.id);
     });
     return h;
+  }
+
+  /// "+ New folder" at the bottom of the list. It is a drop target too: drop
+  /// a session on it and the new folder opens with that session already in it.
+  function newFolderButton() {
+    const b = document.createElement('button');
+    b.className = 'newf';
+    b.type = 'button';
+    b.innerHTML = FOLDER_SVG + '<span>+ New folder</span>';
+    b.addEventListener('click', () => newFolder(null));
+    b.addEventListener('dragover', ev => {
+      if (!dragSid) return;
+      ev.preventDefault();
+      b.style.borderColor = 'var(--accent)';
+    });
+    b.addEventListener('dragleave', () => { b.style.borderColor = ''; });
+    b.addEventListener('drop', ev => {
+      ev.preventDefault();
+      const from = dragSid;
+      clearDropMarks();
+      newFolder(from);
+    });
+    return b;
+  }
+
+  /// Make a folder, optionally with one session moved straight into it, and
+  /// open its name for typing.
+  function newFolder(sid) {
+    const f = { id: 'f' + Date.now().toString(36), name: 'New folder', open: true };
+    folders.push(f);
+    saveFolders();
+    if (sid) moveToFolder(sid, f.id);
+    renderSessions();
+    const nm = sessListEl.querySelector('.folder[data-f="' + f.id + '"] .fname');
+    if (nm) startFolderRename(nm, f);
+  }
+
+  function startFolderRename(nm, f) {
+    renaming = true;
+    nm.setAttribute('contenteditable', 'true');
+    nm.focus();
+    const range = document.createRange();
+    range.selectNodeContents(nm);
+    const sel = window.getSelection();
+    sel.removeAllRanges(); sel.addRange(range);
+
+    let done = false;
+    const finish = commit => {
+      if (done) return; done = true;
+      renaming = false;
+      nm.removeAttribute('contenteditable');
+      const v = nm.textContent.trim();
+      if (commit && v) { f.name = v; saveFolders(); }
+      renderSessions();
+    };
+    nm.addEventListener('keydown', ev => {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') { ev.preventDefault(); finish(true); }
+      else if (ev.key === 'Escape') { ev.preventDefault(); finish(false); }
+    });
+    nm.addEventListener('blur', () => finish(true), { once: true });
+  }
+
+  /// Deleting a folder never touches a session: its sessions go back to the
+  /// machine they run on.
+  function deleteFolder(f) {
+    let n = 0;
+    for (const sid in folderOf) if (folderOf[sid] === f.id) { delete folderOf[sid]; n++; }
+    folders = folders.filter(x => x.id !== f.id);
+    saveFolders();
+    renderSessions();
+    toast('Deleted ' + f.name + (n ? ' - ' + n + ' session' + (n > 1 ? 's' : '') + ' moved back' : ''));
   }
 
   // ── worktree groups ───────────────────────────────────────────────────────
@@ -3694,7 +3884,7 @@
     if (renaming) return;   // never tear down the list mid-edit (would drop focus)
     sessListEl.innerHTML = '';
 
-    const { local: localSessions, vps: vpsSessions, saved } = shownSections();
+    const { local: localSessions, vps: vpsSessions } = shownSections();
     // Only split into sections once a VPS is in the picture; otherwise the list
     // stays a flat local list, exactly as before. Based on every vps: session,
     // not just the unstashed ones, so stashing the last one keeps the layout.
@@ -3732,8 +3922,24 @@
       renderWtGroups('vps', vpsSessions);
     }
 
-    sessListEl.appendChild(savedHeader(saved.length));
-    if (savedOpen) for (const s of saved) sessListEl.appendChild(buildRow(s));
+    sessListEl.appendChild(sectionHeader('Folders'));
+    for (const f of folders) {
+      const kids = sessions.filter(s => folderOf[s.id] === f.id).sort(byUserOrder);
+      sessListEl.appendChild(folderHeader(f, kids));
+      if (!f.open) continue;
+      if (!kids.length) {
+        const e = document.createElement('div');
+        e.className = 'wt-empty';
+        e.textContent = 'Empty - drag sessions here';
+        sessListEl.appendChild(e);
+      }
+      for (const s of kids) {
+        const row = buildRow(s);
+        row.classList.add('in-wt');
+        sessListEl.appendChild(row);
+      }
+    }
+    sessListEl.appendChild(newFolderButton());
 
     const running = sessions.filter(s => {
       const st = states[s.id];
@@ -3789,9 +3995,8 @@
       (s.host !== 'vps' && linked) ? '' : 'none';
     document.getElementById('ctxBring').style.display =
       (s.host === 'vps' && linked) ? '' : 'none';
-    document.getElementById('ctxSave').innerHTML = isSaved(s.id)
-      ? '<span class="k">&#8617;</span> Restore from saved'
-      : '<span class="k">&#9776;</span> Save for later';
+    folderMenu.classList.remove('open');
+    fillCtxFolders(s);
     ctxMenu.style.left = x + 'px';
     ctxMenu.style.top = y + 'px';
     ctxMenu.classList.add('open');
@@ -3807,7 +4012,79 @@
   // silent no-op: menu opens, you click Close session, nothing happens at all.
   // openCtx sets the target afresh, and the items are unreachable while hidden,
   // so keeping it costs nothing.
-  function closeCtx() { ctxMenu.classList.remove('open'); }
+  function closeCtx() {
+    ctxMenu.classList.remove('open');
+    folderMenu.classList.remove('open');
+  }
+
+  // "Move to folder": one line per folder (a tick on the one it is in), a new
+  // folder, and a way back out when it is in one.
+  const ctxFoldersEl = document.getElementById('ctxFolders');
+  function fillCtxFolders(s) {
+    const cur = folderOf[s.id] || null;
+    ctxFoldersEl.innerHTML = '';
+    const add = (html, fn, on) => {
+      const b = document.createElement('button');
+      if (on) b.className = 'on';
+      b.innerHTML = html;
+      b.addEventListener('click', () => { closeCtx(); fn(); });
+      ctxFoldersEl.appendChild(b);
+    };
+    const esc = t => t.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    for (const f of folders) {
+      add('<span class="k">' + (f.id === cur ? '&#10003;' : '') + '</span> ' + esc(f.name),
+          () => { if (f.id !== cur) { moveToFolder(s.id, f.id); moveToast(s, f.id); } },
+          f.id === cur);
+    }
+    add('<span class="k">+</span> New folder...', () => newFolder(s.id));
+    if (cur) add('<span class="k">&#8617;</span> Take out of folder',
+                 () => { moveToFolder(s.id, null); moveToast(s, null); });
+  }
+
+  // ── folder right-click menu ──────────────────────────────────────────────
+  const folderMenu = document.getElementById('folderMenu');
+  let folderTarget = null;   // { nm, f }
+  function openFolderMenu(x, y, nm, f) {
+    ctxMenu.classList.remove('open');
+    folderTarget = { nm, f };
+    folderMenu.querySelector('[data-act="quiet"] span:last-child').textContent =
+      f.quiet ? 'Show status dots' : 'Hide status dots';
+    const t = folderMenu.querySelector('[data-act="toggle"]');
+    t.innerHTML = '<span class="k">' + (f.open ? '&#9662;' : '&#9656;') + '</span> '
+                + (f.open ? 'Collapse' : 'Expand');
+    folderMenu.style.left = x + 'px';
+    folderMenu.style.top = y + 'px';
+    folderMenu.classList.add('open');
+    const r = folderMenu.getBoundingClientRect();
+    if (r.right > window.innerWidth)  folderMenu.style.left = Math.max(4, x - r.width) + 'px';
+    if (r.bottom > window.innerHeight) folderMenu.style.top = Math.max(4, y - r.height) + 'px';
+  }
+  folderMenu.addEventListener('click', ev => {
+    ev.stopPropagation();
+    const b = ev.target.closest('button');
+    const t = folderTarget;
+    if (!b || !t) return;
+    closeCtx();
+    const act = b.dataset.act;
+    if (act === 'toggle') { t.f.open = !t.f.open; saveFolders(); renderSessions(); }
+    else if (act === 'quiet') {
+      t.f.quiet = !t.f.quiet;
+      saveFolders();
+      renderSessions();
+      if (typeof renderStrip === 'function') renderStrip();
+      toast(t.f.quiet ? t.f.name + ' is quiet - no dots, nothing on the Focus strip'
+                      : 'Status dots back on ' + t.f.name);
+    }
+    else if (act === 'delete') deleteFolder(t.f);
+    else if (act === 'rename') {
+      // Deferred for the same reason as the session rename: the click's own
+      // focus fixups would blur the field the instant it opens.
+      setTimeout(() => {
+        const nm = sessListEl.querySelector('.folder[data-f="' + t.f.id + '"] .fname');
+        if (nm) startFolderRename(nm, t.f);
+      }, 0);
+    }
+  });
 
   document.getElementById('ctxRename').addEventListener('click', () => {
     const t = ctxTarget; closeCtx();
@@ -3918,18 +4195,6 @@
         + 'It can take a minute or two.',
       'Bring to Mac',
       () => bringFromVps(t.s, false));
-  });
-
-  // Stash or unstash. Nothing is stopped either way - a saved session goes on
-  // running, which is the point of keeping one for a few days.
-  document.getElementById('ctxSave').addEventListener('click', () => {
-    const t = ctxTarget; closeCtx();
-    if (!t) return;
-    const on = !isSaved(t.s.id);
-    setSaved(t.s.id, on);
-    if (on) { savedOpen = false; savePref('savedOpen', savedOpen); renderSessions(); }
-    toast(on ? 'Saved "' + t.s.name + '" for later'
-             : 'Restored "' + t.s.name + '"');
   });
 
   document.getElementById('ctxClose').addEventListener('click', () => {
@@ -4241,9 +4506,9 @@
 
     for (const id in panes) if (settled(id)) destroyPane(id);
 
-    if ([...savedSids].some(settled)) {
-      for (const id of [...savedSids]) if (settled(id)) savedSids.delete(id);
-      savePref('saved', [...savedSids]);
+    if (Object.keys(folderOf).some(settled)) {
+      for (const id of Object.keys(folderOf)) if (settled(id)) delete folderOf[id];
+      saveFolders();
     }
     if (sessOrder.some(settled)) {
       sessOrder = sessOrder.filter(id => !settled(id));
@@ -4269,7 +4534,9 @@
     // session that has since ended is an empty pane, not a broken one.
     let pruned = false;
     for (let i = 0; i < tiles.length; i++) {
-      if (tiles[i] && (settled(tiles[i]) || isSaved(tiles[i]))) {
+      // A session in a folder may be open - you peek at a loop from its folder -
+      // so only a restored wall drops them, never a running poll.
+      if (tiles[i] && (settled(tiles[i]) || (first && isSaved(tiles[i])))) {
         tiles[i] = null;
         pruned = true;
       }
