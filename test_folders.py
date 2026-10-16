@@ -215,6 +215,55 @@ def main():
                   "drawn there again")
             check(all(tmux("has-session", "-t", "web-" + sids[n]).returncode == 0
                       for n in sids), "and no tmux session was stopped along the way")
+            print("\nCMD-ARROWS WALK THE LOOSE SESSIONS IN FOCUS")
+            page.click("#btnFocus")
+            loose = page.evaluate("""() => [...document.querySelectorAll('#sessList .sess, .sess-list .sess')]
+                .map(r => r.dataset.s)""")
+            loose = [x for i, x in enumerate(loose) if x and x not in loose[:i]
+                     and x != sids["Alpha"]]
+            check(sids["Alpha"] not in loose and len(loose) == 3,
+                  f"Alpha (in a folder) is not in the walk ({len(loose)} loose)")
+            page.evaluate("sid => window.__mtsOpen(sid)", loose[0])
+            page.wait_for_timeout(300)
+            visited = []
+            for _ in range(3):
+                page.keyboard.press("Meta+ArrowDown")
+                page.wait_for_timeout(400)
+                visited.append(page.evaluate("() => window.__mtsActive()"))
+            check(visited == [loose[1], loose[2], loose[0]],
+                  "down, down, down - and from the bottom back to the top")
+            keys_before = page.evaluate("() => window.__mtsDiag().keys")
+            page.keyboard.press("Meta+ArrowUp")
+            page.wait_for_timeout(400)
+            check(page.evaluate("() => window.__mtsDiag().keys") == keys_before,
+                  "the shortcut types nothing into the session")
+            check(page.evaluate("() => window.__mtsActive()") == loose[2],
+                  "up from the top wraps to the bottom")
+            check(sids["Alpha"] not in visited, "the folder session is never visited")
+
+            print("\nTHE LATENCY LOG")
+            pane = page.locator(".tile .xterm").first
+            pane.click()
+            k0 = page.evaluate("() => window.__mtsDiag().keys")
+            page.keyboard.type("echo hi")
+            page.wait_for_timeout(1500)
+            d = page.evaluate("() => window.__mtsDiag()")
+            check(d["keys"] - k0 == 7, f"keystrokes are counted ({d['keys'] - k0} for 'echo hi')")
+            check(len(d["post"]["local"]) >= 1, "each input POST is timed")
+            check(len(d["echo"]["local"]) >= 1 and d["echo"]["local"][0] < 5000,
+                  f"keystroke-to-screen is measured ({d['echo']['local'][:3]} ms)")
+            server.LAT_LOG = os.path.join(workdir, "lat.log")
+            post("/api/diag/latency", dict(d, page="main", lagMax=1500,
+                 stream={"stalls": 1}, echo={"local": [40, 2500], "vps": []}))
+            with open(server.LAT_LOG) as fh:
+                line = json.loads(fh.readline())
+            check(line["echo"]["local"]["over1s"] == 1 and "swap_used_mb" in line["mem"],
+                  "the server writes one line with the page's figures and the Mac's memory")
+            check(line["server_input"]["local"] is not None,
+                  "and its own time for the input calls it served")
+            rep = server.latency_report(7, server.LAT_LOG)
+            check("Slow minutes (an echo over 1s): 1 of 1" in rep and "page itself froze 1" in rep,
+                  "--latency-report reads it back and names the freeze")
             check(not errors, f"still clean{' - ' + errors[0] if errors else ''}")
             browser.close()
     finally:

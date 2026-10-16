@@ -34,6 +34,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -1355,6 +1356,209 @@ def _clip_debug(data):
                               json.dumps(data, ensure_ascii=False)[:2000]))
 
 
+# ── Typing latency, logged for a week's look-back ──────────────────────────
+# "Sometimes I type and nothing shows, then it all lands at once" happens on Mac
+# and box sessions alike, and nothing on screen says where the time went: the
+# page, this process, the hop to the box, or the Mac paging the lot out to swap.
+# So each open page reports a minute of figures and this appends them, with this
+# process's own side and the Mac's memory state, one JSON line per minute.
+# `server.py --latency-report` reads it back.
+LAT_LOG = os.path.join(os.path.expanduser("~"), "Library", "Logs",
+                       "mattdaemon-latency.log")
+_LAT_LOG_MAX = 20 * 1024 * 1024      # then rotate once to .1 - about a month
+_input_window = {"local": [], "vps": []}   # this minute's input-call seconds
+_input_window_lock = threading.Lock()
+_mem_last = {"pageins": None, "swapins": None}
+
+
+def _note_input(host, secs):
+    """One input call's time in this process, for health and for the log."""
+    _note_timing("input_" + host, secs)
+    with _input_window_lock:
+        w = _input_window[host]
+        if len(w) < 5000:
+            w.append(secs)
+
+
+def _lat_stats(values, scale=1.0):
+    """p50/p95/max/n plus how many crossed 1s and 3s, in ms."""
+    vals = sorted(v * scale for v in values if isinstance(v, (int, float)))
+    if not vals:
+        return None
+    return {"n": len(vals),
+            "p50": round(vals[len(vals) // 2]),
+            "p95": round(vals[min(len(vals) - 1, int(len(vals) * 0.95))]),
+            "max": round(vals[-1]),
+            "over1s": sum(1 for v in vals if v >= 1000),
+            "over3s": sum(1 for v in vals if v >= 3000)}
+
+
+def _mem_snapshot():
+    """Swap in use and how much paging happened since the last line. Cheap:
+    two sysctl/vm_stat calls a minute. Empty off macOS."""
+    out = {}
+    try:
+        sw = subprocess.run(["sysctl", "-n", "vm.swapusage"], capture_output=True,
+                            text=True, timeout=3).stdout
+        m = re.search(r"used = ([\d.]+)M", sw)
+        if m:
+            out["swap_used_mb"] = round(float(m.group(1)))
+        lvl = subprocess.run(["sysctl", "-n", "kern.memorystatus_level"],
+                             capture_output=True, text=True, timeout=3).stdout.strip()
+        if lvl.isdigit():
+            out["mem_free_pct"] = int(lvl)
+        vs = subprocess.run(["vm_stat"], capture_output=True, text=True,
+                            timeout=3).stdout
+        for key, label in (("pageins", "Pageins"), ("swapins", "Swapins")):
+            m = re.search(label + r":\s+(\d+)", vs)
+            if not m:
+                continue
+            now = int(m.group(1))
+            if _mem_last[key] is not None:
+                out[key + "_per_min"] = max(0, now - _mem_last[key])
+            _mem_last[key] = now
+    except Exception:
+        pass
+    return out
+
+
+def record_latency(data):
+    """Append one minute from one page. Never raises."""
+    try:
+        with _input_window_lock:
+            server_in = {h: _lat_stats(v, 1000.0) for h, v in _input_window.items()}
+            for v in _input_window.values():
+                v.clear()
+        line = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "page": str(data.get("page", "main"))[:20],
+            "focus": bool(data.get("focus")),
+            "panes": int(data.get("panes") or 0),
+            "keys": int(data.get("keys") or 0),
+            "echo": {h: _lat_stats((data.get("echo") or {}).get(h) or [])
+                     for h in ("local", "vps")},
+            "post": {h: _lat_stats((data.get("post") or {}).get(h) or [])
+                     for h in ("local", "vps")},
+            "server_input": server_in,
+            "loop_lag_max": round(float(data.get("lagMax") or 0)),
+            "stream": {k: int((data.get("stream") or {}).get(k) or 0)
+                       for k in ("stalls", "reconnects", "desyncs", "ended")},
+            "mem": _mem_snapshot(),
+        }
+        try:
+            if os.path.getsize(LAT_LOG) > _LAT_LOG_MAX:
+                os.replace(LAT_LOG, LAT_LOG + ".1")
+        except OSError:
+            pass
+        os.makedirs(os.path.dirname(LAT_LOG), exist_ok=True)
+        with open(LAT_LOG, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(line, separators=(",", ":")) + "\n")
+    except Exception:
+        pass
+
+
+def latency_report(days=7, path=None):
+    """Read the log back: per day, then the worst minutes and what the Mac was
+    doing in them. Returns the text."""
+    path = path or LAT_LOG
+    cutoff = time.strftime("%Y-%m-%dT%H:%M:%S",
+                           time.localtime(time.time() - days * 86400))
+    rows = []
+    for p in (path + ".1", path):
+        try:
+            with open(p, encoding="utf-8") as fh:
+                for raw in fh:
+                    try:
+                        r = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if r.get("ts", "") >= cutoff:
+                        rows.append(r)
+        except OSError:
+            continue
+    if not rows:
+        return "No latency data in the last %d days (%s)." % (days, path)
+
+    def pool(rs, *keys):
+        """Re-pool per-minute stats: n-weighted p50, worst p95/max, summed counts."""
+        stats = [s for s in (_dig(r, keys) for r in rs) if s]
+        if not stats:
+            return None
+        n = sum(s["n"] for s in stats)
+        return {"n": n,
+                "p50": round(sum(s["p50"] * s["n"] for s in stats) / n),
+                "p95": max(s["p95"] for s in stats),
+                "max": max(s["max"] for s in stats),
+                "over1s": sum(s.get("over1s", 0) for s in stats),
+                "over3s": sum(s.get("over3s", 0) for s in stats)}
+
+    def fmt(s):
+        if not s:
+            return "-"
+        return "p50 %4dms  p95 %5dms  max %6dms  >1s %3d  >3s %3d  (n %d)" % (
+            s["p50"], s["p95"], s["max"], s["over1s"], s["over3s"], s["n"])
+
+    out = ["Mattdaemon typing latency - last %d days, %d minutes logged" % (days, len(rows)), ""]
+    by_day = {}
+    for r in rows:
+        by_day.setdefault(r["ts"][:10], []).append(r)
+    for day in sorted(by_day):
+        rs = by_day[day]
+        out.append(day)
+        out.append("  echo  mac   " + fmt(pool(rs, "echo", "local")))
+        out.append("  echo  vps   " + fmt(pool(rs, "echo", "vps")))
+        out.append("  post  mac   " + fmt(pool(rs, "post", "local")))
+        out.append("  post  vps   " + fmt(pool(rs, "post", "vps")))
+        out.append("  server vps  " + fmt(pool(rs, "server_input", "vps")))
+        lag = [r.get("loop_lag_max", 0) for r in rs]
+        swap = [(r.get("mem") or {}).get("swap_used_mb", 0) for r in rs]
+        st = {k: sum((r.get("stream") or {}).get(k, 0) for r in rs)
+              for k in ("stalls", "reconnects", "desyncs", "ended")}
+        out.append("  page froze >1s: %d min   worst freeze %dms   swap max %dMB"
+                   % (sum(1 for x in lag if x >= 1000), max(lag or [0]), max(swap or [0])))
+        out.append("  stream: %(stalls)d stalls, %(reconnects)d reconnects, "
+                   "%(desyncs)d desyncs, %(ended)d sources ended" % st)
+        out.append("")
+
+    # The minutes that felt bad, and what else was true in them. This is the
+    # part that says whether to fix the app or close the dev server.
+    def worst_echo(r):
+        return max(((r.get("echo") or {}).get(h) or {}).get("max", 0)
+                   for h in ("local", "vps"))
+    bad = sorted((r for r in rows if worst_echo(r) >= 1000),
+                 key=worst_echo, reverse=True)
+    out.append("Slow minutes (an echo over 1s): %d of %d" % (len(bad), len(rows)))
+    if bad:
+        froze = sum(1 for r in bad if r.get("loop_lag_max", 0) >= 1000)
+        paging = sum(1 for r in bad if (r.get("mem") or {}).get("swapins_per_min", 0) >= 1000)
+        restream = sum(1 for r in bad if sum((r.get("stream") or {}).values()) > 0)
+        slowpost = sum(1 for r in bad
+                       if max((((r.get("post") or {}).get(h) or {}).get("max", 0))
+                              for h in ("local", "vps")) >= 1000)
+        out.append("  of those: page itself froze %d, heavy swapping %d, "
+                   "stream re-opened %d, input POST slow %d"
+                   % (froze, paging, restream, slowpost))
+        out.append("")
+        out.append("  worst 10:")
+        for r in bad[:10]:
+            mem = r.get("mem") or {}
+            out.append("   %s  echo %6dms  freeze %5dms  swapins/min %6s  post-max %s  stream %s"
+                       % (r["ts"], worst_echo(r), r.get("loop_lag_max", 0),
+                          mem.get("swapins_per_min", "?"),
+                          max((((r.get("post") or {}).get(h) or {}).get("max", 0))
+                              for h in ("local", "vps")),
+                          sum((r.get("stream") or {}).values())))
+    return "\n".join(out)
+
+
+def _dig(d, keys):
+    for k in keys:
+        if not isinstance(d, dict):
+            return None
+        d = d.get(k)
+    return d
+
+
 class TerminalHandler(BaseHTTPRequestHandler):
     # Quiet by default; the request log is noise for a local app.
     def log_message(self, fmt, *args):
@@ -1941,6 +2145,11 @@ class TerminalHandler(BaseHTTPRequestHandler):
             self._json(code, result)
             return
 
+        if path == "/api/diag/latency":
+            record_latency(data)
+            self._json(200, {"ok": True})
+            return
+
         # Handing a local session over to the box is neither a local nor a
         # proxied call - it drives both - so it is routed before the sid split.
         # Slow by nature (it waits on the local Claude); ThreadingHTTPServer
@@ -1973,7 +2182,10 @@ class TerminalHandler(BaseHTTPRequestHandler):
             body.pop("host", None)
             # uploads carry up to 5MB of base64 - give the hop more time.
             tmo = 30 if path == "/api/terminal/upload" else None
+            t0 = time.time()
             res = _vps_post(path, body, timeout=tmo)
+            if path == "/api/terminal/input":
+                _note_input("vps", time.time() - t0)
             if path == "/api/terminal/stop" and res.get("ok"):
                 _vps_snap_drop([data.get("sid", "")])
             self._json(200, res)
@@ -1993,8 +2205,10 @@ class TerminalHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/terminal/input":
-            self._json(200, terminal_manager.write_session(
-                data.get("sid", ""), data.get("data", "")))
+            t0 = time.time()
+            res = terminal_manager.write_session(data.get("sid", ""), data.get("data", ""))
+            _note_input("local", time.time() - t0)
+            self._json(200, res)
             return
         if path == "/api/terminal/resize":
             self._json(200, terminal_manager.resize_session(
@@ -2571,7 +2785,14 @@ def main():
                         help="exercise the VPS -> Mac handover's path map, brief "
                              "header and git step against real throwaway repos, "
                              "then exit (no tmux, no network)")
+    parser.add_argument("--latency-report", nargs="?", const=7, type=int,
+                        metavar="DAYS",
+                        help="summarise the typing-latency log (default: last 7 "
+                             "days), then exit (read-only)")
     args = parser.parse_args()
+    if args.latency_report is not None:
+        print(latency_report(args.latency_report))
+        sys.exit(0)
 
     # Set TERMINAL_HOME BEFORE importing terminal_manager: it reads the env var
     # at import time to fix where new sessions are created. The flag wins, then

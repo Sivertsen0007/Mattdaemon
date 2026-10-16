@@ -616,7 +616,7 @@
         <button class="attach" id="btnAttach" title="Upload an image or file into this session (or paste / drop it)">&#8613; Attach</button>
         <button class="attach" id="btnPlan" title="Open this session's plan or file in your browser" style="display:none">&#9635; Plan</button>
         <button class="attach" id="btnPop" title="Open the focused session in its own window (&#8984;&#8679;O)">&#8599; Pop out</button>
-        <button class="attach focus-btn" id="btnFocus" title="Focus mode - one session, and a strip of what is waiting (&#8984;0)">&#9678; Focus</button>
+        <button class="attach focus-btn" id="btnFocus" title="Focus mode - one session, and a strip of what is waiting (&#8984;0; &#8984;&#8593;/&#8595; walks the sessions)">&#9678; Focus</button>
         <button class="attach rail-btn" id="btnRail" title="Show the session list without leaving Focus (&#8984;&#92;)">&#9636;</button>
         <span class="chip" id="termChip">&#9679; idle</span>
       </div>
@@ -1305,10 +1305,12 @@
     const flushInput = () => {
       if (inputInFlight || !inputQueue.length) return;
       inputInFlight = true;
+      const sentAt = performance.now();
       fetch('/api/terminal/input', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sid, data: nextWrite() })
       }).catch(() => {}).finally(() => {
+        diagNote(diag.post[diagHost(sid)], performance.now() - sentAt);
         inputInFlight = false;
         flushInput();          // send anything typed while that was out
       });
@@ -1317,6 +1319,14 @@
     term.onData(data => {
       if (isDeviceReply(data)) return;
       lastInputAt = Date.now();
+      // An OSC reply (the colour answers xterm sends on a repaint) is the
+      // terminal talking, not you typing, so it stays out of the latency log.
+      if (!data.startsWith('\x1b]')) {
+        diag.keys++;
+        // The clock for "typed, and when did it show": started by the first key
+        // nothing has answered yet, stopped by this pane's next output.
+        if (!typedAt[sid]) typedAt[sid] = performance.now();
+      }
       inputQueue.push(data);
       flushInput();
     });
@@ -1398,6 +1408,41 @@
       sendResize(sid, pane.term.cols, pane.term.rows);
     }
   }, 1000);
+
+  // ── typing-latency log (server.py --latency-report reads it back) ─────────
+  // Once a minute this page sends what typing felt like: keystroke-to-screen
+  // per machine, how long each input POST took, whether the page itself froze
+  // (a 1s timer that fires late means the WebView was not running - swap, most
+  // often), and how often the output stream had to be re-opened. The server
+  // adds its own side and the Mac's memory state and appends one line.
+  //
+  // Echo is approximate on purpose: it is the first output after a key, so a
+  // session that is busy printing anyway answers early. A freeze stops every
+  // pane's output, so it is still exactly what the log needs to catch.
+  const diag = { keys: 0, lagMax: 0,
+                 echo: { local: [], vps: [] }, post: { local: [], vps: [] },
+                 stream: { stalls: 0, reconnects: 0, desyncs: 0, ended: 0 } };
+  const typedAt = {};                       // sid -> first unanswered key (ms)
+  const diagHost = sid => (sid || '').startsWith('vps:') ? 'vps' : 'local';
+  function diagNote(arr, ms) { if (arr.length < 3000) arr.push(Math.round(ms)); }
+  let lagTick = performance.now();
+  setInterval(() => {
+    const now = performance.now();
+    diag.lagMax = Math.max(diag.lagMax, now - lagTick - 1000);
+    lagTick = now;
+  }, 1000);
+  setInterval(() => {
+    const body = { page: soloSid ? 'solo' : 'main', focus: !!focusMode,
+                   panes: streamSids().length, keys: diag.keys,
+                   lagMax: Math.max(0, Math.round(diag.lagMax)),
+                   echo: diag.echo, post: diag.post, stream: diag.stream };
+    diag.keys = 0; diag.lagMax = 0;
+    diag.echo = { local: [], vps: [] }; diag.post = { local: [], vps: [] };
+    diag.stream = { stalls: 0, reconnects: 0, desyncs: 0, ended: 0 };
+    fetch('/api/diag/latency', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body) }).catch(() => {});
+  }, 60000);
 
   const STALL_MS  = 45000;   // no bytes at all -> assume the socket is dead
   const STALE_MS  = 25000;   // on wake/focus: quieter than this is suspect
@@ -1529,11 +1574,19 @@
       // held anyway.
       if (evt.type === 'replay') pane.term.reset();
       pane.term.write(Uint8Array.from(atob(evt.data), c => c.charCodeAt(0)));
+      const t0 = typedAt[evt.sid];
+      if (t0) {
+        const ms = performance.now() - t0;
+        // Over two minutes is a key typed into a pane you then left, not a wait.
+        if (ms < 120000) diagNote(diag.echo[diagHost(evt.sid)], ms);
+        typedAt[evt.sid] = 0;
+      }
       reopenTries = 0;    // bytes are flowing; a later stall starts fresh
       return;
     }
 
     if (evt.type === 'desync') {
+      diag.stream.desyncs++;
       // The server drops a slow subscriber's backlog rather than killing it, and
       // says so, on the understanding that we re-request a replay and carry on.
       // Pumping past it leaves a hole in the byte stream, and every escape
@@ -1548,6 +1601,7 @@
     }
 
     if (evt.type === 'source-ended') {
+      diag.stream.ended++;
       // This pane's source stopped while the rest of the wall kept the response
       // open, so nothing else would ever tell us: the connection stays healthy
       // and the pane stays frozen on whatever it last drew. Re-opening the
@@ -1593,6 +1647,7 @@
   /// coming up after a wake) is not hammered. Cleared on the first bytes back.
   function scheduleReconnect() {
     if (stream.retryTimer) return;
+    diag.stream.reconnects++;
     stream.retries = (stream.retries || 0) + 1;
     const wait = Math.min(RETRY_MAX, 400 * Math.pow(2, stream.retries - 1));
     stream.retryTimer = setTimeout(() => {
@@ -1604,6 +1659,7 @@
   /// Throw away the current connection and open a fresh one at once - the only
   /// cure for a socket that is stale but not closed, which cannot report itself.
   function forceReconnect() {
+    diag.stream.stalls++;
     stream.retries = 0;
     openStream(streamSids());
   }
@@ -4728,6 +4784,14 @@
         if (top) snoozeItem(top); else toast('Nothing to snooze');
         return;
       }
+      // ⌘↓ / ⌘↑ walk the loose sessions - This Mac, then VPS, as the list
+      // draws them - and wrap at either end. Folders are skipped: they are
+      // where you put what you are not walking through right now.
+      if (!ev.shiftKey && (ev.key === 'ArrowDown' || ev.key === 'ArrowUp')) {
+        ev.preventDefault(); ev.stopPropagation();
+        stepSession(ev.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
       if (!ev.shiftKey && ev.key >= '1' && ev.key <= '3') {
         ev.preventDefault(); ev.stopPropagation();
         const it = queue[Number(ev.key) - 1];
@@ -4746,6 +4810,37 @@
       if (activeSid) popOut(activeSid);
     }
   }, true);
+
+  /// The loose sessions in the order the list draws them: This Mac's own and
+  /// its worktrees, then the box's. Read off the rendered rows, because that is
+  /// the order you see (dragged order, worktree groups and all) even while the
+  /// rail is hidden; folder rows are left out.
+  function walkOrder() {
+    const seen = new Set();
+    const out = [];
+    for (const r of sessListEl.querySelectorAll('.sess')) {
+      const sid = r.dataset.s;
+      if (!sid || isSaved(sid) || seen.has(sid)) continue;
+      seen.add(sid);
+      out.push(sid);
+    }
+    return out;
+  }
+
+  function stepSession(dir) {
+    const order = walkOrder();
+    if (!order.length) { toast('No sessions outside folders'); return; }
+    const at = order.indexOf(activeSid);
+    // From a folder session (or none), down starts at the top, up at the bottom.
+    const next = at === -1
+      ? order[dir > 0 ? 0 : order.length - 1]
+      : order[(at + dir + order.length) % order.length];
+    if (next === activeSid) return;
+    focusOpen(next);
+    const i = order.indexOf(next) + 1;
+    const s = sessions.find(x => x.id === next);
+    toast((s ? s.name : 'Session') + '  ·  ' + i + ' of ' + order.length);
+  }
 
   /// The session list, back for as long as you want it, without unwinding Focus.
   ///
@@ -4797,6 +4892,7 @@
     focusOpen(sid);
     return warm;
   };
+  window.__mtsDiag   = () => JSON.parse(JSON.stringify(diag));
   window.__mtsQueue  = () => queue.map(i => ({ sid: i.sid, kind: i.kind, head: i.headline }));
   window.__mtsRail    = on => (on === undefined ? railOpen : setRail(on));
   window.__mtsHasPane = sid => !!panes[sid];
