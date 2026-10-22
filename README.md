@@ -12,7 +12,7 @@ loopback only. Carries nobody's account.
 ![engine](https://img.shields.io/badge/engine-Python%203%20%2B%20tmux-3776AB)
 ![shell](https://img.shields.io/badge/app-Swift%20%2F%20WKWebView-F05138)
 ![network](https://img.shields.io/badge/binds-127.0.0.1%20only-16a34a)
-![licence](https://img.shields.io/badge/repo-private-6b7280)
+![release](https://img.shields.io/github/v/release/Sivertsen0007/Mattdaemon?color=111827)
 
 </div>
 
@@ -22,11 +22,36 @@ loopback only. Carries nobody's account.
 
 | | |
 |---|---|
-| **Start here** | [What it is](#what-it-is) · [Two ways to run it](#two-ways-to-run-it) · [First run](#first-run) |
+| **Start here** | [Install](#install) · [What it is](#what-it-is) · [Two ways to run it](#two-ways-to-run-it) · [First run](#first-run) |
 | **How it works** | [Architecture](#architecture) · [The four pieces](#the-four-pieces) · [A keystroke's journey](#a-keystrokes-journey) · [Session state](#session-state-what-the-dots-mean) · [Status hooks](#the-hooks-that-make-the-dots-honest) |
 | **Features** | [The window](#the-window) · [Copy and paste](#copy-and-paste) · [Handover: Mac to VPS](#handover-mac-to-vps) · [Handover: VPS to Mac](#handover-vps-to-mac) · [Uploads](#uploads) |
 | **Operating it** | [File access, once](#file-access-granted-once-not-every-week) · [Configuration](#configuration) · [Give it to someone else](#give-it-to-someone-else) |
 | **Reference** | [HTTP API](#http-api) · [Constants](#constants-that-matter) · [Repository](#repository-and-git-setup) · [Testing](#testing) · [Troubleshooting](#troubleshooting) · [Design decisions](#design-decisions) |
+
+---
+
+## Install
+
+**Download (Apple Silicon Mac, macOS 13+):**
+
+1. Get `Mattdaemon-macOS-arm64.zip` from the
+   [latest release](https://github.com/Sivertsen0007/Mattdaemon/releases/latest) and unzip it.
+2. Drag `Mattdaemon.app` into `Applications`.
+3. It is not notarised by Apple, so macOS blocks the first launch. Either
+   right-click the app → **Open** → **Open**, or run once:
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/Mattdaemon.app
+   ```
+4. Install what it drives, if you have not already:
+   ```sh
+   xcode-select --install          # gives you python3
+   brew install tmux
+   npm install -g @anthropic-ai/claude-code
+   ```
+5. Open it. The setup card asks for your own Claude Code login and the folder your
+   sessions should start in. Nothing of anyone else's comes with the app.
+
+On an Intel Mac, or to build it yourself, see [Two ways to run it](#two-ways-to-run-it).
 
 ---
 
