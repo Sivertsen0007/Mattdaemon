@@ -114,6 +114,19 @@ tool_subject() {
   esac
 }
 
+# @webclaude is which conversation this session is having: `<session_id>|<cwd>`.
+# It is the lifeboat's only link back: Claude already writes every message to
+# disk, and with the id and the folder it was started in, `claude --resume`
+# brings that conversation back after the tmux session itself is gone (Mac
+# power cut, box reboot). Refreshed on every prompt, so /clear and /resume -
+# which change the id - are followed within one turn.
+case "$EVENT" in
+  SessionStart|UserPromptSubmit)
+    _cid="$(printf '%s' "$JSON" | jq -r '.session_id // empty' 2>/dev/null)"
+    _cwd="$(printf '%s' "$JSON" | jq -r '.cwd // empty' 2>/dev/null)"
+    [ -n "$_cid" ] && tmuxb set-option "@webclaude" "${_cid}|${_cwd}" ;;
+esac
+
 case "$EVENT" in
   PermissionRequest)
     stamp attention

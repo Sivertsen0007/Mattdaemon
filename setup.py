@@ -31,6 +31,8 @@ Stdlib only.
 """
 
 import json
+import re
+import shlex
 import os
 import shutil
 import subprocess
@@ -261,10 +263,10 @@ def tmux_binary():
     return found
 
 
-def _run(cmd, timeout, cwd=None):
+def _run(cmd, timeout, cwd=None, env=None):
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                           cwd=cwd)
+                           cwd=cwd, env=env)
     except (OSError, subprocess.SubprocessError):
         return None
     return r
@@ -313,7 +315,7 @@ def _parse_auth_json(out):
     return data if isinstance(data, dict) else None
 
 
-def auth_state(force=False):
+def auth_state(force=False, config_dir=None):
     """Who, if anyone, this machine's Claude Code is signed in as.
 
     {"loggedIn": bool, "email": str, "method": str, "plan": str, "source": str}
@@ -321,8 +323,9 @@ def auth_state(force=False):
     had to fall back - worth surfacing, because the fallback cannot say *who* is
     signed in, only that someone is.
     """
+    key = "auth" if not config_dir else "auth:" + config_dir
     with _cache_lock:
-        ts, val = _cache["auth"]
+        ts, val = _cache.get(key, (0.0, None))
         if val is not None and not force and time.time() - ts < _AUTH_TTL:
             return val
 
@@ -333,7 +336,7 @@ def auth_state(force=False):
         # should be about this machine's login, not about whatever a particular
         # repo's settings do. Home always exists, which "" cannot promise.
         r = _run([binp, "auth", "status", "--json"], 30,
-                 cwd=os.path.expanduser("~"))
+                 cwd=os.path.expanduser("~"), env=_account_env(config_dir))
         data = _parse_auth_json(r.stdout) if r else None
         if data is not None:
             state.update({
@@ -343,12 +346,12 @@ def auth_state(force=False):
                 "plan": data.get("subscriptionType") or "",
                 "source": "cli",
             })
-        else:
+        elif not config_dir:
             state["loggedIn"] = _keychain_has_login()
             state["source"] = "keychain" if state["loggedIn"] else ""
 
     with _cache_lock:
-        _cache["auth"] = (time.time(), state)
+        _cache[key] = (time.time(), state)
     return state
 
 
@@ -357,10 +360,11 @@ def forget_auth_cache():
     Called the moment a login session is started, so the wizard sees the result
     of a sign-in without waiting out the TTL."""
     with _cache_lock:
-        _cache["auth"] = (0.0, None)
+        for k in [k for k in _cache if k == "auth" or k.startswith("auth:")]:
+            _cache[k] = (0.0, None)
 
 
-def login_command(switch=False):
+def login_command(switch=False, config_dir=None):
     """The command to type into a session to sign in.
 
     Absolute path: the tmux shell inherits the .app's PATH, which may not have
@@ -373,9 +377,152 @@ def login_command(switch=False):
     if not binp:
         return ""
     quoted = "'%s'" % binp.replace("'", "'\\''")
+    if config_dir:
+        # An extra account: the same CLI, pointed at that account's folder.
+        quoted = "CLAUDE_CONFIG_DIR=%s %s" % (shlex.quote(config_dir), quoted)
     if switch:
         return "%s auth logout; %s auth login --claudeai" % (quoted, quoted)
     return "%s auth login --claudeai" % quoted
+
+
+# ── Claude accounts ────────────────────────────────────────────────────────
+#
+# One Mac, several Claude subscriptions signed in at once (e.g. one per
+# company). Claude Code keeps everything about a login in its config folder,
+# and CLAUDE_CONFIG_DIR picks the folder - so an account is just a folder.
+# The main one is ~/.claude; each extra one is ~/.claude-<id>, holding its own
+# login and symlinks back to ~/.claude for everything else (settings, hooks,
+# skills, plugins, memory), so all accounts work in the same set-up and only
+# who pays differs. In the app an extra account is the agent `claude-<id>`.
+
+MAX_ACCOUNTS = 5
+SHARED_ITEMS = ("settings.json", "keybindings.json", "statusline.py", "hooks",
+                "skills", "commands", "plugins", "projects", "plans", "tools",
+                "terminal-status")
+MAIN_DIR = "~/.claude"
+
+
+def _account_env(config_dir):
+    if not config_dir:
+        return None
+    env = dict(os.environ)
+    env["CLAUDE_CONFIG_DIR"] = config_dir
+    return env
+
+
+def accounts(cfg=None):
+    """[{id, label, dir, agent, main}] - the main account first, always there."""
+    cfg = load_config() if cfg is None else cfg
+    out = [{"id": "main", "label": cfg.get("mainAccountLabel") or "Main",
+            "dir": "", "agent": "claude", "main": True}]
+    for a in cfg.get("accounts") or []:
+        if isinstance(a, dict) and a.get("id") and a.get("dir"):
+            out.append({"id": a["id"], "label": a.get("label") or a["id"],
+                        "dir": os.path.expanduser(a["dir"]),
+                        "agent": "claude-" + a["id"], "main": False})
+    return out
+
+
+def account_for_agent(agent):
+    """The account an agent name runs on, or None when it is not one of ours."""
+    for a in accounts():
+        if a["agent"] == agent:
+            return a
+    return None
+
+
+def _slug(label):
+    return re.sub(r"[^a-z0-9]+", "-", (label or "").strip().lower()).strip("-")[:20]
+
+
+def _link_shared(path):
+    """Point everything but the login back at the main ~/.claude."""
+    main = os.path.expanduser(MAIN_DIR)
+    os.makedirs(path, exist_ok=True)
+    for item in SHARED_ITEMS:
+        src, dst = os.path.join(main, item), os.path.join(path, item)
+        if os.path.exists(src) and not os.path.lexists(dst):
+            os.symlink(src, dst)
+
+
+def add_account(label):
+    """Create an account folder and register it. The login is a separate step."""
+    label = (label or "").strip()
+    sid = _slug(label)
+    if not sid:
+        return {"ok": False, "error": "Give the account a name, e.g. the company it is for."}
+    have = accounts()
+    if len(have) >= MAX_ACCOUNTS:
+        return {"ok": False, "error": "You can have up to %d accounts." % MAX_ACCOUNTS}
+    if sid == "main" or any(a["id"] == sid or a["label"].lower() == label.lower() for a in have):
+        return {"ok": False, "error": "There is already an account called %s." % label}
+    path = os.path.expanduser("~/.claude-" + sid)
+    try:
+        _link_shared(path)
+    except OSError as e:
+        return {"ok": False, "error": "Could not create %s: %s" % (path, e)}
+    extra = [a for a in (load_config().get("accounts") or []) if isinstance(a, dict)]
+    extra.append({"id": sid, "label": label, "dir": "~/.claude-" + sid})
+    save_config({"accounts": extra})
+    return {"ok": True, "account": account_for_agent("claude-" + sid)}
+
+
+def rename_account(acc_id, label):
+    label = (label or "").strip()
+    if not label:
+        return {"ok": False, "error": "A name cannot be empty."}
+    if acc_id == "main":
+        save_config({"mainAccountLabel": label})
+        return {"ok": True}
+    extra = [a for a in (load_config().get("accounts") or []) if isinstance(a, dict)]
+    for a in extra:
+        if a.get("id") == acc_id:
+            a["label"] = label
+            save_config({"accounts": extra})
+            return {"ok": True}
+    return {"ok": False, "error": "No such account."}
+
+
+def remove_account(acc_id):
+    """Sign the account out and delete its folder. Never the main one.
+
+    The folder only ever holds this account's own login state plus symlinks, so
+    deleting it cannot touch the shared settings - unlink removes a link, never
+    what it points at. Signing out first clears its Keychain entry too.
+    """
+    if acc_id == "main":
+        return {"ok": False, "error": "The main account cannot be removed."}
+    acc = next((a for a in accounts() if a["id"] == acc_id), None)
+    if not acc:
+        return {"ok": False, "error": "No such account."}
+    binp = claude_binary()
+    if binp:
+        _run([binp, "auth", "logout"], 30, cwd=os.path.expanduser("~"),
+             env=_account_env(acc["dir"]))
+    path = acc["dir"]
+    if os.path.basename(path).startswith(".claude-") and os.path.isdir(path):
+        for name in os.listdir(path):
+            p = os.path.join(path, name)
+            if os.path.islink(p) or os.path.isfile(p):
+                os.unlink(p)
+            else:
+                shutil.rmtree(p, ignore_errors=True)
+        os.rmdir(path)
+    extra = [a for a in (load_config().get("accounts") or [])
+             if isinstance(a, dict) and a.get("id") != acc_id]
+    save_config({"accounts": extra})
+    forget_auth_cache()
+    return {"ok": True}
+
+
+def accounts_state(force=False):
+    """Each account with who it is signed in as - for the settings panel."""
+    out = []
+    for a in accounts():
+        auth = auth_state(force=force, config_dir=a["dir"] or None)
+        out.append(dict(a, loggedIn=bool(auth["loggedIn"]), email=auth["email"],
+                        plan=auth["plan"]))
+    return out
 
 
 # ── setup state ────────────────────────────────────────────────────────────
@@ -426,6 +573,8 @@ def state(force_auth=False):
             "plan": auth["plan"],
             "source": auth["source"],
         },
+        "accounts": accounts_state(force=force_auth),
+        "maxAccounts": MAX_ACCOUNTS,
         "vps": {
             "configured": bool(vps.get("base_url") and vps.get("token")),
             "base_url": vps.get("base_url") or "",

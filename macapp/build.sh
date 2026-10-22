@@ -29,6 +29,7 @@ cp ../server.py "$APP/Contents/Resources/server.py"
 cp ../terminal_manager.py "$APP/Contents/Resources/terminal_manager.py"
 cp ../terminal_worktree.py "$APP/Contents/Resources/terminal_worktree.py"
 cp ../setup.py "$APP/Contents/Resources/setup.py"
+cp ../lifeboat.py "$APP/Contents/Resources/lifeboat.py"
 rm -rf "$APP/Contents/Resources/static"
 cp -R ../static "$APP/Contents/Resources/static"
 

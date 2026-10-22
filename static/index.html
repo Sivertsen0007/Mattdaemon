@@ -249,6 +249,9 @@
   .folder:hover{background:#17171a;color:var(--ink)}
   .folder:focus-visible{outline:1px solid #6a6a72;outline-offset:1px}
   .folder.drop-in{border-color:var(--accent);background:#1a1a1d;color:var(--ink)}
+  .folder.dragging{opacity:.35}
+  .folder.drop-before{box-shadow:inset 0 2px 0 var(--accent)}
+  .folder.drop-after{box-shadow:inset 0 -2px 0 var(--accent)}
   .folder .caret{flex:none;width:9px;font-size:8px;color:var(--inkDim);transition:transform .12s}
   .folder.open .caret{transform:rotate(90deg)}
   .folder svg{flex:none;width:15px;height:15px;color:var(--inkDim)}
@@ -388,6 +391,19 @@
   .linkish{background:transparent;border:0;color:var(--inkMute);text-decoration:underline;
     font-family:'JetBrains Mono',monospace;font-size:11.5px;cursor:pointer;padding:0}
   .linkish:hover{color:var(--ink)}
+  /* ---- lifeboat: sessions lost with the machine, offered back ---- */
+  .lifeboat{display:none;margin:0 0 8px;padding:9px 10px;border:1px solid #6b5a2a;
+    border-radius:7px;background:#17140b;font:12px/1.4 'JetBrains Mono',monospace;color:var(--ink)}
+  .lifeboat.open{display:block}
+  .lifeboat .lb-title{font-weight:600;margin-bottom:6px}
+  .lifeboat .lb-row{display:flex;align-items:center;gap:7px;padding:3px 0;color:var(--inkMute)}
+  .lifeboat .lb-row input{margin:0}
+  .lifeboat .lb-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink)}
+  .lifeboat .lb-tag{flex:none;font-size:10.5px;padding:1px 5px;border-radius:4px;background:#2a2410;color:#e0c068}
+  .lifeboat .lb-acts{display:flex;gap:6px;margin-top:8px}
+  .lifeboat .lb-acts button{flex:1;padding:5px 6px;border-radius:5px;border:1px solid var(--border);
+    background:var(--surface);color:var(--ink);font:inherit;cursor:pointer}
+  .lifeboat .lb-acts button.go{border-color:#c8a24b;background:#2a2410}
   .side-foot{display:flex;gap:7px}
   .side-foot .tb-btn{flex:1}
   .side-foot .gear{flex:none;width:34px}
@@ -593,6 +609,7 @@
         <button class="btn-wt" id="btnWt" title="New worktree - an isolated checkout on its own branch, with its own sessions">&#9282;</button>
       </div>
 
+      <div class="lifeboat" id="lifeboat"></div>
       <div class="sess-list" id="sessList"></div>
 
       <div class="sess-count" id="sessCount">0 sessions</div>
@@ -653,8 +670,10 @@
 <!-- which agent "+ New" starts. Same clothes as the right-click menu. -->
 <div class="ctx" id="agentMenu">
   <div class="head" id="agentMenuWhere">on this Mac</div>
-  <button data-agent="claude"><span class="k">&#9679;</span> New Claude session</button>
-  <button data-agent="codex"><span class="k">&#9679;</span> New Codex session</button>
+  <div id="agentItems">
+    <button data-agent="claude"><span class="k">&#9679;</span> New Claude session</button>
+    <button data-agent="codex"><span class="k">&#9679;</span> New Codex session</button>
+  </div>
   <div class="sep"></div>
   <button data-plain="1"><span class="k">&#8250;</span> Plain shell</button>
 </div>
@@ -874,11 +893,25 @@
       </div>
 
       <div class="sect">
-        <h4>Claude account</h4>
-        <div class="row" id="setAccount">
-          <span class="rdot"></span>
-          <div class="rtext"><div class="rname">Checking...</div><div class="rnote"></div></div>
-          <div class="ract"><button class="btn-ghost" id="setSwitch">Sign in as someone else</button></div>
+        <h4>Claude accounts</h4>
+        <div class="acc-list" id="setAccounts"></div>
+        <button class="btn-ghost" id="setAccAddBtn" style="margin-top:8px">+ Add account</button>
+        <div class="foldout" id="setAccAdd">
+          <div class="field" style="margin-top:10px">
+            <label>New account</label>
+            <div class="hint" style="margin:2px 0 8px">
+              Each account is its own Claude subscription, signed in next to the others.
+              All of them share your settings, skills, hooks and memory.<br>
+              1. Give it a name - usually the company it pays for.<br>
+              2. Press Add. A session opens and starts the Claude sign-in.<br>
+              3. Your browser opens: check you are signed into <b>that</b> account on claude.ai, then approve.<br>
+              4. Done. It shows up in "+ New" as its own Claude.
+            </div>
+            <div class="fline">
+              <input id="setAccName" spellcheck="false" autocomplete="off" placeholder="e.g. DT" maxlength="20">
+              <button class="btn-primary" id="setAccCreate">Add and sign in</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -2830,6 +2863,24 @@
   }
 
   let dragSid = null;
+  // A folder being dragged by its header. Kept apart from dragSid so a session
+  // dropped on a folder still goes INTO it, and a folder dropped on a folder
+  // only changes where it sits.
+  let dragFid = null;
+
+  /// Put folder `fromFid` just before or after `toFid` in the folder list.
+  function moveFolder(fromFid, toFid, after) {
+    if (!fromFid || fromFid === toFid) return;
+    const f = folderById(fromFid);
+    if (!f) return;
+    folders = folders.filter(x => x.id !== fromFid);
+    let at = folders.findIndex(x => x.id === toFid);
+    if (at === -1) at = folders.length;
+    else if (after) at += 1;
+    folders.splice(at, 0, f);
+    saveFolders();
+    renderSessions();
+  }
 
   function clearDropMarks() {
     for (const el of sessListEl.querySelectorAll('.drop-before,.drop-after,.drop-in'))
@@ -2926,7 +2977,7 @@
 
     // Which agent, shown only when it is not the default - a rail where every
     // row said "claude" would be saying nothing at all.
-    const agent = s.agent && s.agent !== 'claude' ? s.agent : '';
+    const agent = s.agent && s.agent !== 'claude' ? (AGENT_BADGE[s.agent] || s.agent) : '';
 
     // Where the session is showing, if anywhere. With four panes on screen the
     // list is no longer a list of one open session and several closed ones, so
@@ -3075,15 +3126,48 @@
       ev.stopPropagation();
       openFolderMenu(ev.clientX, ev.clientY, nm, f);
     });
+    // The header is also the handle for moving the folder itself.
+    h.draggable = true;
+    h.addEventListener('dragstart', ev => {
+      dragFid = f.id;
+      h.classList.add('dragging');
+      ev.dataTransfer.effectAllowed = 'move';
+      try { ev.dataTransfer.setData('text/plain', f.id); } catch {}
+    });
+    h.addEventListener('dragend', () => {
+      dragFid = null;
+      h.classList.remove('dragging');
+      clearDropMarks();
+    });
+    const lowerHalf = ev => {
+      const r = h.getBoundingClientRect();
+      return ev.clientY > r.top + r.height / 2;
+    };
     h.addEventListener('dragover', ev => {
+      if (dragFid) {
+        if (dragFid === f.id) return;
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = 'move';
+        const after = lowerHalf(ev);
+        h.classList.toggle('drop-before', !after);
+        h.classList.toggle('drop-after', after);
+        return;
+      }
       if (!dragSid || folderOf[dragSid] === f.id) return;
       ev.preventDefault();
       ev.dataTransfer.dropEffect = 'move';
       h.classList.add('drop-in');
     });
-    h.addEventListener('dragleave', () => h.classList.remove('drop-in'));
+    h.addEventListener('dragleave', () =>
+      h.classList.remove('drop-in', 'drop-before', 'drop-after'));
     h.addEventListener('drop', ev => {
       ev.preventDefault();
+      if (dragFid) {
+        const fromF = dragFid;
+        clearDropMarks();
+        moveFolder(fromF, f.id, lowerHalf(ev));
+        return;
+      }
       const from = dragSid;
       clearDropMarks();
       if (!from || folderOf[from] === f.id) return;
@@ -3631,7 +3715,8 @@
     // On by default: a worktree is made to be worked in, and every one of them so
     // far has ended with someone typing `claude` in each shell by hand.
     wtAutoEl.checked = loadPref('wtAuto', true) !== false;
-    wtAgentEl.value = loadPref('wtAgent', 'claude') === 'codex' ? 'codex' : 'claude';
+    const wtPref = loadPref('wtAgent', 'claude');
+    wtAgentEl.value = AGENT_LABELS[wtPref] ? wtPref : 'claude';
 
     // The VPS option is only real when a box is connected, reachable, and new
     // enough to know what a worktree is. Otherwise it says which of those it is
@@ -4545,6 +4630,144 @@
   });
 
   // ── polling: sessions + states ───────────────────────────────────────────
+  // ── agents and Claude accounts ───────────────────────────────────────────
+  // Which agents "+ New" can start comes from the engine: Claude once per
+  // account added in Settings (each its own login), then Codex. Nothing about
+  // the accounts is written into this page.
+  const AGENT_LABELS = { claude: 'Claude', codex: 'Codex' };
+  const AGENT_BADGE = {};               // claude-<id> -> account label, for the rail
+  async function loadAgents() {
+    let list;
+    try { list = (await (await fetch('/api/terminal/agents')).json()).agents; } catch { return; }
+    if (!Array.isArray(list) || !list.length) return;
+    for (const k of Object.keys(AGENT_LABELS)) delete AGENT_LABELS[k];
+    for (const k of Object.keys(AGENT_BADGE)) delete AGENT_BADGE[k];
+    const items = document.getElementById('agentItems');
+    items.innerHTML = '';
+    const wtSel = document.getElementById('wtAgent');
+    const keep = wtSel.value;
+    wtSel.innerHTML = '';
+    for (const a of list) {
+      AGENT_LABELS[a.name] = a.label;
+      if (!a.main) AGENT_BADGE[a.name] = a.account;
+      const b = document.createElement('button');
+      b.dataset.agent = a.name;
+      // An extra account is a login on this Mac; the box has no such agent.
+      if (!a.main) b.dataset.macOnly = '1';
+      b.innerHTML = '<span class="k">&#9679;</span> ';
+      b.appendChild(document.createTextNode('New ' + a.label + ' session'));
+      items.appendChild(b);
+      const o = document.createElement('option');
+      o.value = a.name;
+      o.textContent = a.label;
+      wtSel.appendChild(o);
+    }
+    wtSel.value = AGENT_LABELS[keep] ? keep : 'claude';
+    if (!AGENT_LABELS[newAgent]) newAgent = 'claude';
+    if (typeof paintAgent === 'function') paintAgent();
+  }
+
+  // ── the lifeboat bar ─────────────────────────────────────────────────────
+  // Sessions that went down with a machine: this Mac (power cut), the box
+  // (reboot), or the box being down right now (continue its conversations
+  // here). Ticked rows come back with one click; nothing comes back unasked.
+  const lifeboatEl = document.getElementById('lifeboat');
+  let lifeboatSids = new Set();
+  let lifeboatKey = '';
+
+  async function refreshLifeboat() {
+    let j;
+    try { j = await (await fetch('/api/terminal/lifeboat')).json(); } catch { return; }
+    if (!j || !j.ok) return;
+    const groups = [
+      ['local', j.local || [], 'lost when this Mac shut down'],
+      ['vps', j.vps || [], 'lost when the VPS restarted'],
+      ['down', j.vps_down || [], 'on the VPS, which is down - continue them on this Mac'],
+    ].filter(g => g[1].length);
+    lifeboatSids = new Set(groups.flatMap(g => g[1].map(e => e.sid)));
+    const key = [...lifeboatSids].sort().join(',');
+    if (key === lifeboatKey) return;          // unchanged: keep the ticks you set
+    lifeboatKey = key;
+    lifeboatEl.innerHTML = '';
+    lifeboatEl.classList.toggle('open', groups.length > 0);
+    for (const [, rows, why] of groups) {
+      const t = document.createElement('div');
+      t.className = 'lb-title';
+      t.textContent = rows.length + (rows.length === 1 ? ' session ' : ' sessions ') + why;
+      lifeboatEl.appendChild(t);
+      for (const e of rows) {
+        const row = document.createElement('label');
+        row.className = 'lb-row';
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = true;
+        cb.dataset.sid = e.sid;
+        row.appendChild(cb);
+        const nm = document.createElement('span');
+        nm.className = 'lb-name';
+        nm.textContent = e.name || e.sid;
+        nm.title = e.headline || e.cwd || e.local_cwd || '';
+        row.appendChild(nm);
+        const tag = e.interrupted ? 'was working' : (e.resumable ? '' : 'shell only');
+        if (tag) {
+          const tg = document.createElement('span');
+          tg.className = 'lb-tag';
+          tg.textContent = tag;
+          tg.title = e.interrupted
+            ? 'Died mid-turn. A note is typed in for you to read and send.'
+            : 'No Claude conversation was linked - it comes back as a shell in the same folder.';
+          row.appendChild(tg);
+        }
+        lifeboatEl.appendChild(row);
+      }
+    }
+    const acts = document.createElement('div');
+    acts.className = 'lb-acts';
+    const go = document.createElement('button');
+    go.className = 'go';
+    go.textContent = 'Restore';
+    go.addEventListener('click', () => lifeboatAct('restore'));
+    const no = document.createElement('button');
+    no.textContent = 'Dismiss';
+    no.title = 'Let the ticked sessions go for good';
+    no.addEventListener('click', () => lifeboatAct('dismiss'));
+    acts.append(go, no);
+    lifeboatEl.appendChild(acts);
+  }
+
+  async function lifeboatAct(what) {
+    const sids = [...lifeboatEl.querySelectorAll('input[type=checkbox]:checked')]
+      .map(cb => cb.dataset.sid);
+    if (!sids.length) { toast('Tick at least one session'); return; }
+    let j = {};
+    try {
+      j = await (await fetch('/api/terminal/lifeboat/' + what, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sids }) })).json();
+    } catch { toast('Could not reach the app engine'); return; }
+    // A box session continued here has a new id: it keeps its folder and place.
+    for (const [from, to] of Object.entries(j.moved || {})) {
+      if (folderOf[from]) { folderOf[to] = folderOf[from]; delete folderOf[from]; }
+      sessOrder = sessOrder.map(id => id === from ? to : id);
+    }
+    if (what === 'dismiss') {
+      for (const sid of sids) delete folderOf[sid];
+      sessOrder = sessOrder.filter(id => !sids.includes(id));
+    }
+    saveFolders();
+    savePref('order', sessOrder);
+    const n = (j.restored || []).length + Object.keys(j.moved || {}).length;
+    if (what === 'restore')
+      toast((j.failed || []).length
+        ? 'Restored ' + n + ', ' + j.failed.length + ' failed: ' + (j.failed[0].error || '')
+        : 'Restored ' + n + (n === 1 ? ' session' : ' sessions'));
+    else toast('Let ' + sids.length + ' go');
+    lifeboatKey = '';
+    await refreshLifeboat();
+    refreshSessions();
+  }
+  setInterval(refreshLifeboat, 10000);
+
   async function refreshSessions() {
     try {
       const r = await fetch('/api/terminal/sessions');
@@ -4558,7 +4781,11 @@
     // to throw away its pane, forget its place in the list, and - worst of the
     // three - move you into an unrelated session and mark that one instead.
     const live = new Set(sessions.map(s => s.id));
-    const settled = id => (id.startsWith('vps:') ? vpsInfo.online : true) && !live.has(id);
+    // A session the lifeboat is holding is not gone - it is waiting to come
+    // back under the same id, into the same folder and place in the list.
+    if (!booted) await refreshLifeboat();
+    const settled = id => (id.startsWith('vps:') ? vpsInfo.online : true)
+                          && !live.has(id) && !lifeboatSids.has(id);
 
     for (const id in panes) if (settled(id)) destroyPane(id);
 
@@ -4671,9 +4898,7 @@
   // choice is remembered, so it is a decision you make once and not every time.
   const agentMenu = document.getElementById('agentMenu');
   const agentWhereEl = document.getElementById('agentMenuWhere');
-  const AGENT_LABELS = { claude: 'Claude', codex: 'Codex' };
-  let newAgent = AGENT_LABELS[loadPref('newAgent', 'claude')] ? loadPref('newAgent', 'claude')
-                                                             : 'claude';
+  let newAgent = loadPref('newAgent', 'claude');
 
   // The last agent you picked is marked in the menu, and that is ALL it does:
   // the menu opens on every new session, on both machines, so which agent runs
@@ -4684,6 +4909,7 @@
     });
   }
   paintAgent();
+  loadAgents();
 
   // Which machine the menu will start the session on. Set on every open, so a
   // menu left over from the VPS "+" can never open a session on the wrong box.
@@ -4694,6 +4920,10 @@
     if (agentMenu.classList.contains('open')) { closeAgentMenu(); return; }
     agentMenuHost = host === 'vps' ? 'vps' : 'local';
     agentWhereEl.textContent = agentMenuHost === 'vps' ? 'on the VPS' : 'on this Mac';
+    // The DT account is a login on this Mac; the box has no such agent.
+    agentMenu.querySelectorAll('button[data-mac-only]').forEach(b => {
+      b.style.display = agentMenuHost === 'vps' ? 'none' : '';
+    });
     const r = anchor.getBoundingClientRect();
     agentMenu.style.left = r.left + 'px';
     agentMenu.style.top  = (r.bottom + 4) + 'px';
@@ -5295,15 +5525,7 @@
       'Settings are stored per user at ' + st.configPath +
       ' - the app itself carries none of this, so a copy handed to someone else starts blank.';
 
-    const acc = document.getElementById('setAccount');
-    acc.querySelector('.rdot').className = 'rdot ' + (st.claude.loggedIn ? 'good' : 'bad');
-    acc.querySelector('.rname').textContent = st.claude.loggedIn
-      ? (st.claude.email || 'Signed in') : 'Signed out';
-    acc.querySelector('.rnote').textContent = st.claude.loggedIn
-      ? [st.claude.plan && st.claude.plan + ' plan', st.claude.method].filter(Boolean).join(' - ')
-      : 'Claude Code has no login on this Mac. Sign in to use the terminal.';
-    document.getElementById('setSwitch').textContent =
-      st.claude.loggedIn ? 'Sign in as someone else' : 'Sign in';
+    renderAccounts(st);
 
     const row = document.getElementById('setVpsRow');
     row.querySelector('.rdot').className = 'rdot ' + (st.vps.configured ? 'good' : '');
@@ -5384,15 +5606,148 @@
     setMsg(settingsMsg, 'New sessions will open in ' + res.state.home.path, 'good');
   });
 
-  document.getElementById('setSwitch').addEventListener('click', async () => {
-    const res = await postJSON('/api/setup/login', { switch: setupState.claude.loggedIn });
-    if (!res.ok) { setMsg(settingsMsg, res.error || 'Could not start the sign-in.', 'bad'); return; }
-    // The sign-in runs in an ordinary session, so hand it to the main window and
-    // get out of the way - the browser handshake happens there.
+  // ── Claude accounts ──────────────────────────────────────────────────────
+  // One row per account: who it is signed in as, and what you can do with it.
+  // Signing in always happens in an ordinary session, so the panel hands that
+  // session to the main window and gets out of the way.
+  function renderAccounts(st) {
+    const list = document.getElementById('setAccounts');
+    list.innerHTML = '';
+    const accs = st.accounts || [];
+    for (const a of accs) {
+      const row = document.createElement('div');
+      row.className = 'row';
+      row.style.marginBottom = '6px';
+      const dot = document.createElement('span');
+      dot.className = 'rdot ' + (a.loggedIn ? 'good' : 'bad');
+      const txt = document.createElement('div');
+      txt.className = 'rtext';
+      const nm = document.createElement('div');
+      nm.className = 'rname';
+      nm.textContent = a.label + (a.main ? '  (main)' : '');
+      const note = document.createElement('div');
+      note.className = 'rnote';
+      note.textContent = a.loggedIn
+        ? [a.email, a.plan && a.plan + ' plan'].filter(Boolean).join(' - ')
+        : 'Not signed in yet - press Sign in.';
+      txt.append(nm, note);
+      const act = document.createElement('div');
+      act.className = 'ract';
+      act.style.display = 'flex';
+      act.style.gap = '6px';
+      const btn = (label, fn) => {
+        const b = document.createElement('button');
+        b.className = 'btn-ghost';
+        b.textContent = label;
+        b.addEventListener('click', () => fn(b));
+        act.appendChild(b);
+        return b;
+      };
+      btn(a.loggedIn ? 'Switch login' : 'Sign in', () => signInAccount(a, a.loggedIn));
+      btn('Rename', () => renameAccount(a));
+      if (!a.main) btn('Remove', b => removeAccount(a, b));
+      row.append(dot, txt, act);
+      list.appendChild(row);
+    }
+    const full = accs.length >= (st.maxAccounts || 5);
+    const add = document.getElementById('setAccAddBtn');
+    add.disabled = full;
+    add.textContent = full ? 'Up to ' + (st.maxAccounts || 5) + ' accounts' : '+ Add account';
+  }
+
+  async function startedSignIn(sid, label) {
     settingsSheet.classList.remove('open');
     await refreshSessions();
-    switchTo(res.sid);
-    toast('Signing in - follow the prompt in this session');
+    if (sid) switchTo(sid);
+    toast('Signing in ' + label + ' - approve it in your browser, on the right account');
+    // Watch for the login to land, so you are told when it has worked.
+    const t0 = Date.now();
+    const poll = setInterval(async () => {
+      if (Date.now() - t0 > 300000) { clearInterval(poll); return; }
+      await fetchSetupState(true);
+      const a = (setupState.accounts || []).find(x => x.label === label);
+      if (a && a.loggedIn) {
+        clearInterval(poll);
+        toast(label + ' is signed in as ' + (a.email || 'you') + ' - pick it in "+ New"');
+        loadAgents();
+      }
+    }, 4000);
+  }
+
+  async function signInAccount(a, switching) {
+    const res = await postJSON('/api/setup/login', { switch: switching, account: a.id });
+    if (!res.ok) { setMsg(settingsMsg, res.error || 'Could not start the sign-in.', 'bad'); return; }
+    startedSignIn(res.sid, a.label);
+  }
+
+  async function renameAccount(a) {
+    const nm = document.querySelector('#setAccounts .row:nth-child('
+      + ((setupState.accounts || []).indexOf(a) + 1) + ') .rname');
+    if (!nm) return;
+    nm.textContent = a.label;
+    nm.contentEditable = 'true';
+    nm.focus();
+    document.getSelection().selectAllChildren(nm);
+    let finished = false;
+    const done = async commit => {
+      if (finished) return;               // Enter, then the blur it causes
+      finished = true;
+      nm.contentEditable = 'false';
+      const v = nm.textContent.trim();
+      if (commit && v && v !== a.label) {
+        const res = await postJSON('/api/setup/account/rename', { id: a.id, label: v });
+        if (!res.ok) setMsg(settingsMsg, res.error || 'Could not rename.', 'bad');
+        loadAgents();
+      }
+      await fetchSetupState(true);
+      renderAccounts(setupState);
+    };
+    nm.addEventListener('keydown', ev => {
+      if (ev.key === 'Enter') { ev.preventDefault(); done(true); }
+      if (ev.key === 'Escape') { ev.preventDefault(); done(false); }
+    });
+    nm.addEventListener('blur', () => done(true), { once: true });
+  }
+
+  async function removeAccount(a, b) {
+    // Two clicks on the button itself rather than a browser confirm(), which
+    // would freeze the page (and a toast would sit behind this panel).
+    if (!b.dataset.armed) {
+      b.dataset.armed = '1';
+      b.textContent = 'Click again to remove';
+      setMsg(settingsMsg, a.label + ' will be signed out and its folder deleted. '
+        + 'Your shared settings and memory are not touched.', '');
+      setTimeout(() => { delete b.dataset.armed; b.textContent = 'Remove'; }, 4000);
+      return;
+    }
+    const res = await postJSON('/api/setup/account/remove', { id: a.id });
+    if (!res.ok) { setMsg(settingsMsg, res.error || 'Could not remove.', 'bad'); return; }
+    await fetchSetupState(true);
+    renderAccounts(setupState);
+    loadAgents();
+    setMsg(settingsMsg, a.label + ' removed', 'good');
+  }
+
+  document.getElementById('setAccAddBtn').addEventListener('click', () => {
+    const f = document.getElementById('setAccAdd');
+    f.classList.toggle('open');
+    if (f.classList.contains('open')) document.getElementById('setAccName').focus();
+  });
+  const createAccount = async () => {
+    const inp = document.getElementById('setAccName');
+    const label = inp.value.trim();
+    if (!label) { inp.focus(); return; }
+    const res = await postJSON('/api/setup/account/add', { label });
+    if (!res.ok) { setMsg(settingsMsg, res.error || 'Could not add the account.', 'bad'); return; }
+    inp.value = '';
+    document.getElementById('setAccAdd').classList.remove('open');
+    loadAgents();
+    if (res.loginError) { setMsg(settingsMsg, res.loginError, 'bad'); return; }
+    startedSignIn(res.sid, res.account.label);
+  };
+  document.getElementById('setAccCreate').addEventListener('click', createAccount);
+  document.getElementById('setAccName').addEventListener('keydown', ev => {
+    if (ev.key === 'Enter') { ev.preventDefault(); createAccount(); }
   });
 
   document.getElementById('setVpsToggle').addEventListener('click', () => {

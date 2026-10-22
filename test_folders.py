@@ -151,6 +151,25 @@ def main():
             check(ls("folderOf").get(sids["Charlie"]) == ls("folders")[-1]["id"],
                   "dragging Charlie onto the folder moves it in")
 
+            print("\nDRAG FOLDERS INTO YOUR OWN ORDER")
+            names = lambda: [f["name"] for f in ls("folders")]
+            wl_id = ls("folders")[-1]["id"]
+            folder("Website loop").drag_to(folder("Saved for later"),
+                                           target_position={"x": 20, "y": 2})
+            page.wait_for_timeout(200)
+            check(names() == ["Website loop", "Saved for later"],
+                  "dropping a folder on the top half of another puts it above")
+            check(ls("folderOf").get(sids["Charlie"]) == wl_id,
+                  "and its sessions go with it")
+            top = page.evaluate("() => document.querySelector('.folder .fname').textContent")
+            check(top == "Website loop", "the sidebar draws the new order")
+            box = folder("Website loop").bounding_box()
+            folder("Website loop").drag_to(folder("Saved for later"),
+                                           target_position={"x": 20, "y": box["height"] - 2})
+            page.wait_for_timeout(200)
+            check(names() == ["Saved for later", "Website loop"],
+                  "dropping on the bottom half puts it below")
+
             print("\nA SHUT FOLDER STILL SAYS WHO WANTS YOU")
             if "open" in (folder("Website loop").get_attribute("class") or ""):
                 folder("Website loop").click()

@@ -178,11 +178,11 @@ def _vps_headers():
             "User-Agent": "Mattdaemon/1.0 (macOS)"}
 
 
-def _vps_get_bytes(path):
+def _vps_get_bytes(path, timeout=None):
     """GET raw bytes from the box (not JSON). None on any failure."""
     try:
         req = urllib.request.Request(VPS_BASE + path, headers=_vps_headers())
-        with urllib.request.urlopen(req, timeout=VPS_TIMEOUT) as r:
+        with urllib.request.urlopen(req, timeout=timeout or VPS_TIMEOUT) as r:
             return r.read()
     except Exception:
         return None
@@ -1180,7 +1180,7 @@ def setup_save_folder(raw):
     return {"ok": True, "state": setup.state()}
 
 
-def setup_start_login(switch=False):
+def setup_start_login(switch=False, account_id=None):
     """Open a real session and run `claude auth login` in it.
 
     Deliberately the same flow as signing in from Terminal.app: this server
@@ -1192,13 +1192,19 @@ def setup_start_login(switch=False):
     The command is typed from a thread after a short beat, because a login shell
     that is still drawing its prompt eats input written the instant it is born.
     """
-    cmd = setup.login_command(switch=switch)
+    acc = None
+    if account_id and account_id != "main":
+        acc = next((a for a in setup.accounts() if a["id"] == account_id), None)
+        if not acc:
+            return {"ok": False, "error": "No such account."}
+    cmd = setup.login_command(switch=switch, config_dir=acc["dir"] if acc else None)
     if not cmd:
         return {"ok": False,
                 "error": "Claude Code is not installed on this Mac."}
 
-    started = terminal_manager.start_session(
+    title = ("Sign in: %s" % acc["label"]) if acc else (
         "Switch account" if switch else "Sign in to Claude")
+    started = terminal_manager.start_session(title)
     if not started.get("ok"):
         return started
     sid = started["session"]["id"]
@@ -1652,6 +1658,12 @@ class TerminalHandler(BaseHTTPRequestHandler):
             _note_timing("sessions", time.time() - t0)
             self._json(200, payload)
             return
+        if path == "/api/terminal/lifeboat":
+            self._json(200, lifeboat_state())
+            return
+        if path == "/api/terminal/agents":
+            self._json(200, {"ok": True, "agents": terminal_manager.agent_list()})
+            return
         if path == "/api/terminal/states":
             t0 = time.time()
             payload = _merged_states()
@@ -1991,7 +2003,23 @@ class TerminalHandler(BaseHTTPRequestHandler):
             self._json(200, setup_save_folder(data.get("path", "")))
             return
         if path == "/api/setup/login":
-            self._json(200, setup_start_login(switch=bool(data.get("switch"))))
+            self._json(200, setup_start_login(switch=bool(data.get("switch")),
+                                              account_id=data.get("account")))
+            return
+        if path == "/api/setup/account/add":
+            # Create the account, then go straight to signing it in: a name with
+            # no login behind it is not an account you can use yet.
+            res = setup.add_account(data.get("label", ""))
+            if res.get("ok"):
+                login = setup_start_login(account_id=res["account"]["id"])
+                res.update({"sid": login.get("sid"), "loginError": login.get("error")})
+            self._json(200, res)
+            return
+        if path == "/api/setup/account/rename":
+            self._json(200, setup.rename_account(data.get("id", ""), data.get("label", "")))
+            return
+        if path == "/api/setup/account/remove":
+            self._json(200, setup.remove_account(data.get("id", "")))
             return
         if path == "/api/setup/complete":
             self._json(200, setup_complete(data.get("sid") or None))
@@ -2007,6 +2035,11 @@ class TerminalHandler(BaseHTTPRequestHandler):
             # Claude login is Claude Code's own and is never touched from here.
             setup.save_config({"setupComplete": False})
             self._json(200, {"ok": True, "state": setup.state()})
+            return
+
+        if path in ("/api/terminal/lifeboat/restore", "/api/terminal/lifeboat/dismiss"):
+            self._json(200, lifeboat_restore(
+                data.get("sids") or [], dismiss=path.endswith("/dismiss")))
             return
 
         # /start has no sid yet, so it routes on an explicit host field; every
@@ -2216,7 +2249,10 @@ class TerminalHandler(BaseHTTPRequestHandler):
                 data.get("viewer", "")))
             return
         if path == "/api/terminal/stop":
-            self._json(200, terminal_manager.stop_session(data.get("sid", "")))
+            res = terminal_manager.stop_session(data.get("sid", ""))
+            if lifeboat:
+                lifeboat.forget(data.get("sid", ""))
+            self._json(200, res)
             return
         if path == "/api/terminal/rename":
             self._json(200, terminal_manager.rename_session(
@@ -2235,6 +2271,215 @@ def _make_server(port):
     """A loopback-only threaded HTTP server. Threaded so an open SSE stream
     never blocks other requests (input/resize/stop must land while streaming)."""
     return ThreadingHTTPServer(("127.0.0.1", port), TerminalHandler)
+
+
+# ── the lifeboat ──────────────────────────────────────────────────────────
+# Local sessions: lifeboat.py keeps the record and restores them on this Mac.
+# Box sessions: the box runs the same module for its own reboots, and this
+# side only proxies to it. The one thing the box cannot do for itself is help
+# while it is DOWN - so this Mac keeps a copy of each box session's
+# conversation, and when the box stops answering it offers to continue them
+# here.
+
+lifeboat = None
+_VPS_HOME = "/home/aihub"
+_MIRROR_EVERY = 60.0            # seconds between copies of one transcript
+_VPS_DOWN_AFTER = 60.0          # box silent this long = offer "continue here"
+_mirror_lock = threading.Lock()
+_mirror = {}                    # realid -> entry (persisted)
+_APP_STARTED = time.time()
+
+
+def _lifeboat_dir():
+    return os.path.dirname(setup.user_config_path())
+
+
+def _mirror_path():
+    return os.path.join(_lifeboat_dir(), "vps-sessions.json")
+
+
+def _project_slug(path):
+    """Claude's folder name for a project: every non-alphanumeric becomes '-'."""
+    return re.sub(r"[^A-Za-z0-9]", "-", path.rstrip("/"))
+
+
+def _save_mirror():
+    tmp = _mirror_path() + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"sessions": list(_mirror.values())}, f, indent=1)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, _mirror_path())
+
+
+def _mirror_once():
+    """Copy the conversation of every live box session that has moved on."""
+    snap = _vps_snapshot()
+    if not snap["online"]:
+        return
+    now = time.time()
+    live = set()
+    for s in snap["sessions"]:
+        cid, _, ccwd = (s.get("claude") or "").partition("|")
+        if not cid or not ccwd:
+            continue
+        real = s.get("realid") or ""
+        live.add(real)
+        with _mirror_lock:
+            e = _mirror.get(real) or {"realid": real}
+            e.update({"name": s.get("name", ""), "agent": s.get("agent", ""),
+                      "box_cwd": ccwd, "last_seen": now})
+            due = (e.get("claude_id") != cid
+                   or now - e.get("mirrored_at", 0) >= _MIRROR_EVERY)
+            e["claude_id"] = cid
+            _mirror[real] = e
+        if not due:
+            continue
+        local_cwd = _map_path_from_vps(ccwd)
+        if not local_cwd or not os.path.isdir(local_cwd):
+            continue                # no folder here to continue it in
+        remote = "%s/.claude/projects/%s/%s.jsonl" % (
+            _VPS_HOME, _project_slug(ccwd), cid)
+        # A long conversation is megabytes; give it more than a control call.
+        data = _vps_get_bytes("/api/terminal/file?path=" + urllib.request.quote(remote),
+                              timeout=60)
+        if not data or data.lstrip()[:1] != b"{" or b'"error"' in data[:40]:
+            continue
+        dest_dir = os.path.expanduser("~/.claude/projects/" + _project_slug(local_cwd))
+        os.makedirs(dest_dir, exist_ok=True)
+        dest = os.path.join(dest_dir, cid + ".jsonl")
+        tmp = dest + ".mts-tmp"
+        with open(tmp, "wb") as f:
+            f.write(data)
+        os.replace(tmp, dest)
+        with _mirror_lock:
+            _mirror[real].update({"mirrored_at": now, "local_cwd": local_cwd})
+    with _mirror_lock:
+        # A box session that is gone while the box answers was closed there.
+        for real in [r for r in _mirror if r not in live]:
+            _mirror.pop(real)
+        _save_mirror()
+
+
+def _vps_down_for():
+    """Seconds the box has been silent, or 0 while it answers / is not set up."""
+    if not _vps_enabled():
+        return 0.0
+    with _vps_snap_lock:
+        ts = _vps_snap["ts"]
+    # Never heard from since this app started - the Mac came back while the box
+    # was still down, which is exactly when "continue here" matters most.
+    return time.time() - (ts or _APP_STARTED)
+
+
+def _vps_continuable():
+    """Box sessions that can be carried on here because the box is down."""
+    if _vps_down_for() < _VPS_DOWN_AFTER:
+        return []
+    with _mirror_lock:
+        rows = [dict(e) for e in _mirror.values() if e.get("mirrored_at")]
+    for e in rows:
+        e["sid"] = SID_VPS_PREFIX + e["realid"]
+        e["host"] = "vps"
+        e["resumable"] = True
+    return rows
+
+
+def _continue_vps_here(realid):
+    with _mirror_lock:
+        e = dict(_mirror.get(realid) or {})
+    if not e.get("mirrored_at"):
+        return {"ok": False, "error": "no copy of that conversation on this Mac"}
+    agent = "claude"
+    res = terminal_manager.start_session(
+        (e.get("name") or "VPS session") + " (from VPS)",
+        cwd=e.get("local_cwd"), autostart=True, agent=agent,
+        resume=e["claude_id"],
+        brief=lifeboat.INTERRUPTED_NOTE.replace(
+            "the machine this session ran on went down mid-turn",
+            "the VPS went down, and this is your conversation continued on the Mac"),
+        send_brief=False)
+    if res.get("ok"):
+        with _mirror_lock:
+            _mirror.pop(realid, None)
+            _save_mirror()
+    return res
+
+
+def lifeboat_state():
+    """Everything that can be brought back, for the bar in the sidebar."""
+    out = {"ok": True, "local": lifeboat.lost() if lifeboat else [],
+           "vps": [], "vps_down": _vps_continuable()}
+    if _vps_enabled() and _vps_snapshot()["online"]:
+        res = _vps_get("/api/terminal/lifeboat")
+        for e in (res or {}).get("local", []) if (res or {}).get("ok") else []:
+            e = dict(e)
+            e["realid"] = e["sid"]
+            e["sid"] = SID_VPS_PREFIX + e["sid"]
+            e["host"] = "vps"
+            out["vps"].append(e)
+    return out
+
+
+def lifeboat_restore(sids, dismiss=False):
+    """Restore (or let go of) lost sessions, wherever they belong."""
+    local, vps = [], []
+    for sid in sids or []:
+        host, real = _split_sid(sid)
+        (vps if host == "vps" else local).append(real)
+    out = {"ok": True, "restored": [], "failed": [], "moved": {}}
+    if local and lifeboat:
+        res = lifeboat.dismiss(local) if dismiss else lifeboat.restore(local)
+        out["restored"] += res.get("restored", [])
+        out["failed"] += res.get("failed", [])
+    if not vps:
+        return out
+    if _vps_down_for() >= _VPS_DOWN_AFTER:
+        # The box is down: these are continued on this Mac under a new id;
+        # `moved` tells the page which old id became which, for its folders.
+        for real in vps:
+            if dismiss:
+                with _mirror_lock:
+                    _mirror.pop(real, None)
+                    _save_mirror()
+                continue
+            res = _continue_vps_here(real)
+            if res.get("ok"):
+                out["moved"][SID_VPS_PREFIX + real] = res["session"]["id"]
+            else:
+                out["failed"].append({"sid": SID_VPS_PREFIX + real,
+                                      "error": res.get("error", "")})
+    else:
+        res = _vps_post("/api/terminal/lifeboat/" + ("dismiss" if dismiss else "restore"),
+                        {"sids": vps}, timeout=30)
+        out["restored"] += [SID_VPS_PREFIX + r for r in res.get("restored", [])]
+        out["failed"] += res.get("failed", []) if res.get("ok") is False else []
+    out["ok"] = not out["failed"]
+    return out
+
+
+def _start_lifeboat():
+    global lifeboat
+    import lifeboat as lb
+    lifeboat = lb
+    lb.start(terminal_manager, os.path.join(_lifeboat_dir(), "sessions.json"))
+    try:
+        with open(_mirror_path(), encoding="utf-8") as f:
+            for e in json.load(f).get("sessions", []):
+                if e.get("realid"):
+                    _mirror[e["realid"]] = e
+    except (OSError, ValueError):
+        pass
+
+    def loop():
+        while True:
+            try:
+                if _vps_enabled():
+                    _mirror_once()
+            except Exception:
+                pass
+            time.sleep(15)
+    threading.Thread(target=loop, daemon=True, name="vps-mirror").start()
 
 
 def _import_manager():
@@ -2823,6 +3068,7 @@ def main():
 
     _import_manager()
     _start_vps_poller()
+    _start_lifeboat()
 
     if setup.is_complete():
         print(f"Working directory: {os.environ['TERMINAL_HOME']}")

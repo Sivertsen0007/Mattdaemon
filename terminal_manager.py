@@ -205,7 +205,7 @@ def _list_sessions_raw():
     answered=False means tmux did not give us a usable answer, so the caller must
     not conclude anything - least of all that every session is gone.
     """
-    fmt = "#{session_name}\t#{session_created}\t#{window_width}\t#{window_height}\t#{@webname}\t#{@webplan}\t#{@webloop}\t#{pane_current_command}\t#{pane_pid}\t#{@webstate}\t#{@webfile}\t#{session_activity}\t#{@webworktree}\t#{@webwtname}\t#{@webagent}\t#{window_activity}\t#{@webneed}"
+    fmt = "#{session_name}\t#{session_created}\t#{window_width}\t#{window_height}\t#{@webname}\t#{@webplan}\t#{@webloop}\t#{pane_current_command}\t#{pane_pid}\t#{@webstate}\t#{@webfile}\t#{session_activity}\t#{@webworktree}\t#{@webwtname}\t#{@webagent}\t#{window_activity}\t#{@webneed}\t#{@webclaude}"
     r = _tmux("list-sessions", "-F", fmt)
     if r.returncode != 0:
         # A dead server genuinely means zero sessions; anything else is unknown.
@@ -239,6 +239,9 @@ def _list_sessions_raw():
         # is open; only the hook knows it is ExitPlanMode and not a Bash
         # permission, and only the transcript knows what the turn produced.
         webneed = parts[16] if len(parts) > 16 else ""
+        # Which Claude conversation this is (`id|cwd`, stamped by the hook) -
+        # what the lifeboat needs to resume it after the machine went down.
+        claude = parts[17] if len(parts) > 17 else ""
         # The "has this pane changed?" stamp that lets the status poll skip
         # re-reading a screen that cannot have moved - see _pane_signals.
         #
@@ -262,6 +265,7 @@ def _list_sessions_raw():
             "loop": loop, "cmd": cmd, "pid": pid, "webstate": webstate,
             "webfile": webfile, "activity": activity, "webneed": webneed,
             "worktree": worktree, "worktree_name": wtname, "agent": agent,
+            "claude": claude,
         })
     out.sort(key=lambda s: s["created_at"])
     with _last_good_lock:
@@ -1133,7 +1137,44 @@ def agent_spec(agent):
     An unknown name is never quietly turned into the default: a caller that asks
     for codex and silently gets Claude is worse off than one that gets an error.
     """
-    return AGENTS.get((agent or "").strip().lower() or DEFAULT_AGENT)
+    name = (agent or "").strip().lower() or DEFAULT_AGENT
+    if name in AGENTS:
+        return AGENTS[name]
+    # An extra Claude account from Settings: the same Claude, with
+    # CLAUDE_CONFIG_DIR pointing at that account's folder (see setup.accounts).
+    acc = _account_for_agent(name)
+    if acc is None:
+        return None
+    return dict(AGENTS["claude"], name=name, label=acc["label"],
+                cmd="CLAUDE_CONFIG_DIR=%s %s" % (shlex.quote(acc["dir"]),
+                                                 AGENTS["claude"]["cmd"]))
+
+
+def _account_for_agent(name):
+    if not name.startswith("claude-"):
+        return None
+    try:
+        import setup
+    except ImportError:
+        return None          # the box has no accounts
+    return setup.account_for_agent(name)
+
+
+def agent_list():
+    """Every agent a new session can start, in menu order, with its label."""
+    out = []
+    try:
+        import setup
+        accs = setup.accounts()
+    except ImportError:
+        accs = [{"agent": "claude", "label": "Claude", "main": True}]
+    for a in accs:
+        out.append({"name": a["agent"], "label": "Claude (%s)" % a["label"]
+                    if len(accs) > 1 else "Claude", "account": a["label"],
+                    "main": a["main"]})
+    out.append({"name": "codex", "label": AGENTS["codex"]["label"],
+                "account": "", "main": True})
+    return out
 # What a Claude that is up and waiting for you looks like. The input caret is the
 # signal: the footer text varies with version and settings - one session says
 # "auto mode on", another only "for agents" - but the caret is what "ready" means
@@ -1172,7 +1213,7 @@ def worktree_brief(path, branch, repo, base, count):
         % (path, branch, base or "its base", repo, repo, others))
 
 
-def _prime_agent(sid, spec, brief=None, window=90.0):
+def _prime_agent(sid, spec, brief=None, window=90.0, send=True):
     """Get the agent past its opening prompt and, optionally, hand it the brief.
 
     Two things happen on a first launch in a brand new directory. The agent asks
@@ -1187,6 +1228,9 @@ def _prime_agent(sid, spec, brief=None, window=90.0):
 
     A brief is only ever typed for an agent that cannot be handed one on the
     command line; the caller passes brief=None for the ones that can.
+
+    send=False leaves the brief typed in the input but not submitted - the
+    lifeboat's note to a session that died mid-turn, which is yours to send.
     """
     trust_markers = spec["trust"]
     def watch():
@@ -1215,14 +1259,16 @@ def _prime_agent(sid, spec, brief=None, window=90.0):
                 # -l sends the text literally, so a word like "Enter" inside the
                 # brief stays a word instead of becoming a keypress.
                 _tmux("send-keys", "-t", _sname(sid), "-l", brief)
-                time.sleep(0.4)
-                _tmux("send-keys", "-t", _sname(sid), "Enter")
+                if send:
+                    time.sleep(0.4)
+                    _tmux("send-keys", "-t", _sname(sid), "Enter")
                 return
     threading.Thread(target=watch, daemon=True, name="wt-prime-%s" % sid[:6]).start()
 
 
 def start_session(name=None, cwd=None, worktree=None, worktree_name=None,
-                  autostart=False, brief=None, agent=None):
+                  autostart=False, brief=None, agent=None, sid=None,
+                  resume=None, send_brief=True):
     """Create a new tmux-backed session.
 
     `cwd` opens it somewhere other than the configured working folder - used by
@@ -1237,6 +1283,10 @@ def start_session(name=None, cwd=None, worktree=None, worktree_name=None,
     (claude when unsaid; see AGENTS). Off by default - a new terminal should be a
     terminal, and starting an agent is a decision rather than a side effect of
     opening a window.
+
+    `sid`, `resume` and `send_brief` are the lifeboat's: a lost session comes
+    back under its old id (so its folder, order and pane hold) running
+    `claude --resume <resume>`, with any brief typed but left unsent.
     """
     if not _tmux_available():
         return {"ok": False, "error": "tmux not installed"}
@@ -1247,7 +1297,11 @@ def start_session(name=None, cwd=None, worktree=None, worktree_name=None,
     if autostart and spec is None:
         return {"ok": False, "error": "unknown agent: %s" % agent}
 
-    sid = uuid.uuid4().hex[:12]
+    if sid:
+        if _session_exists(sid):
+            return {"ok": False, "error": "session %s already exists" % sid}
+    else:
+        sid = uuid.uuid4().hex[:12]
     if name is None:
         # Default sessions are named after the folder they open in: for
         # ~/code/Ledger the first is "Ledger", then "Ledger 2", "Ledger 3"...
@@ -1295,10 +1349,13 @@ def start_session(name=None, cwd=None, worktree=None, worktree_name=None,
         # arrives with the session instead of being typed in once the pane looks
         # ready, which is one screen-scrape fewer to be wrong about.
         line = spec["cmd"]
-        if brief and spec["brief_as_arg"]:
+        if resume and spec["name"].startswith("claude"):
+            line = "%s --resume %s" % (spec["cmd"], shlex.quote(resume))
+        elif brief and spec["brief_as_arg"]:
             line = "%s %s" % (spec["cmd"], shlex.quote(brief))
         _tmux("send-keys", "-t", _sname(sid), line, "Enter")
-        _prime_agent(sid, spec, None if spec["brief_as_arg"] else brief)
+        _prime_agent(sid, spec, None if spec["brief_as_arg"] else brief,
+                     send=send_brief)
 
     return {"ok": True, "session": {
         "id": sid, "name": name, "alive": True,
