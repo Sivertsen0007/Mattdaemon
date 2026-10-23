@@ -1114,14 +1114,15 @@ def session_diff(sid):
 
 # The agents a session can be autostarted with. `cmd` is typed into the fresh
 # shell; `trust` is the folder prompt that agent opens with in a directory it has
-# never seen (answered with Enter - the accepting option is the one already
-# selected in both); `brief_as_arg` is how it takes an opening brief - codex
+# never seen (accepted by moving the highlight to the "Yes" option and pressing
+# Enter - see _prime_agent); `brief_as_arg` is how it takes an opening brief - codex
 # reads one as a positional argument, claude has to be typed at once its input is
 # listening, which is the whole reason _prime_agent watches the pane at all.
 AGENTS = {
     "claude": {"name": "claude", "label": "Claude", "cmd": "claude",
                "brief_as_arg": False,
                "trust": ("do you trust the files in this folder",
+                         "is this a project you created or one you trust",
                          "yes, i trust this folder")},
     "codex":  {"name": "codex", "label": "Codex", "cmd": "codex",
                "brief_as_arg": True,
@@ -1213,6 +1214,15 @@ def worktree_brief(path, branch, repo, base, count):
         % (path, branch, base or "its base", repo, repo, others))
 
 
+def _selected_option(screen):
+    """The highlighted line of a menu on screen, lowercased, or None."""
+    for line in screen.splitlines():
+        t = line.strip()
+        if t[:1] in ("\u276f", "\u203a", ">"):
+            return t.lower()
+    return None
+
+
 def _prime_agent(sid, spec, brief=None, window=90.0, send=True):
     """Get the agent past its opening prompt and, optionally, hand it the brief.
 
@@ -1236,6 +1246,7 @@ def _prime_agent(sid, spec, brief=None, window=90.0, send=True):
     def watch():
         deadline = time.time() + window
         trusted = False
+        downs = 0
         while time.time() < deadline:
             time.sleep(0.7)
             r = _tmux("capture-pane", "-p", "-t", _sname(sid))
@@ -1245,6 +1256,16 @@ def _prime_agent(sid, spec, brief=None, window=90.0, send=True):
                 continue
             low = (r.stdout or "").lower()
             if not trusted and any(m in low for m in trust_markers):
+                # Enter takes whichever option is highlighted, and that is not
+                # always "yes": Claude's newer prompt opens on "No, exit", so a
+                # blind Enter quit Claude and left a bare shell - where typing
+                # `claude` again starts it on the MAIN account, not this one.
+                # Walk the highlight down to the accepting option first.
+                sel = _selected_option(r.stdout or "")
+                if sel is not None and "yes" not in sel and downs < 4:
+                    _tmux("send-keys", "-t", _sname(sid), "Down")
+                    downs += 1
+                    continue
                 _tmux("send-keys", "-t", _sname(sid), "Enter")
                 trusted = True
                 continue
