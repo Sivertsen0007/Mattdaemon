@@ -2243,6 +2243,13 @@ class TerminalHandler(BaseHTTPRequestHandler):
             _note_input("local", time.time() - t0)
             self._json(200, res)
             return
+        if path == "/api/terminal/scroll":
+            # Negative lines is up, into tmux's history. The browser terminal
+            # has no scrollback of its own under tmux, so this is the only thing
+            # that can scroll a conversation - see scroll_session.
+            self._json(200, terminal_manager.scroll_session(
+                data.get("sid", ""), data.get("lines", 0)))
+            return
         if path == "/api/terminal/resize":
             self._json(200, terminal_manager.resize_session(
                 data.get("sid", ""), data.get("cols", 80), data.get("rows", 24),
