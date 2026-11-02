@@ -62,6 +62,15 @@ fi
 #
 #    Run ./make-signing-cert.sh once to create one. Without it this falls back
 #    to ad-hoc, which still builds and still runs - it just forgets.
+# macOS tags files it has seen with extended attributes - com.apple.provenance
+# on anything recent, quarantine on anything downloaded - and codesign refuses a
+# bundle that carries them: "resource fork, Finder information, or similar
+# detritus not allowed". It then leaves the bundle with NO signature at all,
+# which Gatekeeper will not launch, and because the failure is one line in the
+# middle of an otherwise clean build it is easy to miss. Stripping them is the
+# whole fix, and it removes nothing the app needs.
+xattr -cr "$APP" 2>/dev/null || true
+
 SIGN_ID="${MATTDAEMON_SIGN_ID:-Mattdaemon Local Signing}"
 if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; then
     echo "==> Codesigning as \"$SIGN_ID\""
