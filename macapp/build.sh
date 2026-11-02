@@ -11,10 +11,20 @@ echo "==> swift build -c $CONFIG"
 swift build -c "$CONFIG"
 
 BIN_PATH="$(swift build -c "$CONFIG" --show-bin-path)"
-APP="build/Mattdaemon.app"
+OUT="build/Mattdaemon.app"
 
-echo "==> Assembling $APP"
-rm -rf "$APP"
+# The bundle is assembled and signed in a temporary folder OUTSIDE the repo and
+# only then copied to build/. A repo under ~/Desktop or ~/Documents is usually
+# synced by iCloud, whose File Provider keeps putting its own attributes back on
+# every file there - faster than any xattr -c can take them off - and codesign
+# refuses such a bundle with "resource fork, Finder information, or similar
+# detritus not allowed", leaving it unsigned. In a temp folder nothing touches
+# it, and a signature made there stays valid when the finished app is copied in.
+STAGE="$(mktemp -d "${TMPDIR:-/tmp}/mattdaemon-build.XXXXXX")"
+trap 'rm -rf "$STAGE"' EXIT
+APP="$STAGE/Mattdaemon.app"
+
+echo "==> Assembling $OUT (staged in $STAGE)"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 # 1. Native binary + Info.plist + app icon
@@ -62,13 +72,9 @@ fi
 #
 #    Run ./make-signing-cert.sh once to create one. Without it this falls back
 #    to ad-hoc, which still builds and still runs - it just forgets.
-# macOS tags files it has seen with extended attributes - com.apple.provenance
-# on anything recent, quarantine on anything downloaded - and codesign refuses a
-# bundle that carries them: "resource fork, Finder information, or similar
-# detritus not allowed". It then leaves the bundle with NO signature at all,
-# which Gatekeeper will not launch, and because the failure is one line in the
-# middle of an otherwise clean build it is easy to miss. Stripping them is the
-# whole fix, and it removes nothing the app needs.
+#
+#    Quarantine and other attributes copied in with the sources are stripped
+#    first; codesign rejects a bundle carrying Finder info or a resource fork.
 xattr -cr "$APP" 2>/dev/null || true
 
 SIGN_ID="${MATTDAEMON_SIGN_ID:-Mattdaemon Local Signing}"
@@ -82,5 +88,13 @@ else
     codesign --force --deep --sign - "$APP"
 fi
 
-echo "==> Done: $APP"
-echo "Run with: open $APP   (or: $APP/Contents/MacOS/MLSuiteTerminal for console logs)"
+codesign --verify --deep --strict "$APP"
+
+# 4. Hand the signed app over to build/. ditto keeps the signature intact.
+rm -rf "$OUT"
+mkdir -p "$(dirname "$OUT")"
+ditto "$APP" "$OUT"
+codesign --verify --deep "$OUT"
+
+echo "==> Done: $OUT"
+echo "Run with: open $OUT   (or: $OUT/Contents/MacOS/MLSuiteTerminal for console logs)"
