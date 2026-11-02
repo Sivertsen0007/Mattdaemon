@@ -6,7 +6,18 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-CONFIG="${1:-release}"
+# Usage: ./build.sh [release|debug] [--install]
+#   --install  also puts the app in ~/Applications (or $MATTDAEMON_INSTALL_DIR),
+#              quitting a running copy first and starting it again after.
+CONFIG="release"
+INSTALL=0
+for arg in "$@"; do
+    case "$arg" in
+        --install) INSTALL=1 ;;
+        release|debug) CONFIG="$arg" ;;
+        *) echo "usage: $0 [release|debug] [--install]" >&2; exit 2 ;;
+    esac
+done
 echo "==> swift build -c $CONFIG"
 swift build -c "$CONFIG"
 
@@ -97,4 +108,48 @@ ditto "$APP" "$OUT"
 codesign --verify --deep "$OUT"
 
 echo "==> Done: $OUT"
-echo "Run with: open $OUT   (or: $OUT/Contents/MacOS/MLSuiteTerminal for console logs)"
+
+if [[ "$INSTALL" != 1 ]]; then
+    echo "Run with: open $OUT   (or: $OUT/Contents/MacOS/MLSuiteTerminal for console logs)"
+    echo "Or rebuild with --install to put it in ~/Applications."
+    exit 0
+fi
+
+# 5. Install. Copied from the clean staged bundle, never from build/: a repo in
+#    an iCloud folder hands its attributes on to anything copied out of it, and
+#    the installed app would then fail a strict signature check. --noextattr
+#    keeps them off; Finder can still tag the bundle folder itself with
+#    FinderInfo the moment it appears, so that is stripped too before checking.
+DEST_DIR="${MATTDAEMON_INSTALL_DIR:-$HOME/Applications}"
+DEST="$DEST_DIR/Mattdaemon.app"
+BUNDLE_ID="$(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$APP/Contents/Info.plist")"
+
+# Sessions live in tmux, so quitting the app loses nothing - they are all
+# there again when it starts. Replacing a bundle that is running is what breaks.
+WAS_RUNNING=0
+if pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1; then
+    WAS_RUNNING=1
+    echo "==> Quitting the running Mattdaemon"
+    osascript -e "quit app id \"$BUNDLE_ID\"" >/dev/null 2>&1 || true
+    for _ in $(seq 1 20); do
+        pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1 || break
+        sleep 0.5
+    done
+    if pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1; then
+        echo "!! Mattdaemon did not quit - close it and run again" >&2
+        exit 1
+    fi
+fi
+
+echo "==> Installing to $DEST"
+mkdir -p "$DEST_DIR"
+rm -rf "$DEST"
+ditto --noextattr --noqtn "$APP" "$DEST"
+xattr -rd com.apple.FinderInfo "$DEST" 2>/dev/null || true
+codesign --verify --deep --strict "$DEST"
+
+if [[ "$WAS_RUNNING" == 1 ]]; then
+    echo "==> Starting it again"
+    open "$DEST"
+fi
+echo "==> Installed: $DEST"
