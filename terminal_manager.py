@@ -1844,6 +1844,20 @@ def scroll_session(sid, lines):
                 return {"ok": False,
                         "error": (res.stderr or "").strip() or "copy-mode refused"}
         res = _tmux("send-keys", "-t", sname, "-X", "-N", str(-n), "scroll-up")
+        if res.returncode != 0 and not entering:
+            # The flag said "scrolled up" but the pane had already left the
+            # mode: copy-mode -e ends it the moment a scroll-down reaches the
+            # bottom, and that scroll still succeeds, so nothing cleared the
+            # flag. Every scroll up after that failed with "not in a mode"
+            # until a scroll down happened to repair it - which, with a
+            # trackpad's back-and-forth, made scrolling feel all but broken.
+            # Enter the mode again and repeat the scroll.
+            res = _tmux("copy-mode", "-e", "-t", sname)
+            if res.returncode == 0:
+                res = _tmux("send-keys", "-t", sname, "-X", "-N", str(-n), "scroll-up")
+            if res.returncode != 0:
+                with _copy_lock:
+                    _copy_mode.pop(sid, None)
     else:
         with _copy_lock:
             if not _copy_mode.get(sid, False):
