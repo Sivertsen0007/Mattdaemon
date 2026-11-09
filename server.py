@@ -306,6 +306,12 @@ def _vps_open_stream(real_id):
 _RELAY_PATIENCE = 90.0
 
 
+# Output older than this when it is about to be sent means the window reading
+# the stream has fallen behind (paused by macOS, mostly), so the stream is
+# reset to the present instead of delivering a backlog. See _stream_multi.
+STALE_OUTPUT_S = 2.5
+
+
 def _session_event_source(sid):
     """One session's events as dicts, wherever the shell actually lives.
 
@@ -1471,7 +1477,7 @@ def record_latency(data):
             "server_input": server_in,
             "loop_lag_max": round(float(data.get("lagMax") or 0)),
             "stream": {k: int((data.get("stream") or {}).get(k) or 0)
-                       for k in ("stalls", "reconnects", "desyncs", "ended", "noecho")},
+                       for k in ("stalls", "reconnects", "desyncs", "ended", "noecho", "stale")},
             "mem": _mem_snapshot(),
         }
         try:
@@ -1542,11 +1548,12 @@ def latency_report(days=7, path=None):
         lag = [r.get("loop_lag_max", 0) for r in rs]
         swap = [(r.get("mem") or {}).get("swap_used_mb", 0) for r in rs]
         st = {k: sum((r.get("stream") or {}).get(k, 0) for r in rs)
-              for k in ("stalls", "reconnects", "desyncs", "ended", "noecho")}
+              for k in ("stalls", "reconnects", "desyncs", "ended", "noecho", "stale")}
         out.append("  page froze >1s: %d min   worst freeze %dms   swap max %dMB"
                    % (sum(1 for x in lag if x >= 1000), max(lag or [0]), max(swap or [0])))
         out.append("  stream: %(stalls)d stalls, %(reconnects)d reconnects, "
-                   "%(desyncs)d desyncs, %(ended)d sources ended, %(noecho)d deaf panes healed" % st)
+                   "%(desyncs)d desyncs, %(ended)d sources ended, %(noecho)d deaf panes healed, "
+                   "%(stale)d stale backlogs skipped" % st)
         out.append("")
 
     # The minutes that felt bad, and what else was true in them. This is the
@@ -1919,7 +1926,7 @@ class TerminalHandler(BaseHTTPRequestHandler):
         self.send_header("Connection", "keep-alive")
         self.end_headers()
 
-        merged = queue.Queue(maxsize=4096)
+        merged = queue.Queue(maxsize=1024)
         stop = threading.Event()
 
         def pump(sid):
@@ -1929,6 +1936,10 @@ class TerminalHandler(BaseHTTPRequestHandler):
                 for event in source:
                     if stop.is_set():
                         break
+                    # A relayed vps: event has no birth time of its own; the
+                    # moment it reached this Mac is the closest thing to one.
+                    if event.get("type") == "output" and "t" not in event:
+                        event = dict(event, t=int(time.time() * 1000))
                     # Never block for good on a full queue: if the client has
                     # gone, `stop` is the only thing that will ever free it.
                     while not stop.is_set():
@@ -1973,6 +1984,26 @@ class TerminalHandler(BaseHTTPRequestHandler):
                         f"data: {json.dumps({'type': 'source-ended', 'sid': sid})}\n\n".encode())
                     self.wfile.flush()
                     continue
+                if (event.get("type") == "output"
+                        and time.time() * 1000 - event.get("t", 1e18) > STALE_OUTPUT_S * 1000):
+                    # The window has fallen behind. macOS pauses a pop-out that
+                    # sits behind other windows; while it slept its output piled
+                    # up here (and in the socket), and on waking it would play
+                    # every old frame before the one showing what you just typed
+                    # - seconds, sometimes a minute, of "typing does not show".
+                    # Throw the pile away and tell the window to re-open: a fresh
+                    # attach replays the screen as it is NOW.
+                    dropped = 0
+                    while True:
+                        try:
+                            merged.get_nowait()
+                            dropped += 1
+                        except queue.Empty:
+                            break
+                    self.wfile.write(
+                        f"data: {json.dumps({'type': 'desync', 'reason': 'stale', 'dropped': dropped})}\n\n".encode())
+                    self.wfile.flush()
+                    break
                 self.wfile.write(
                     f"data: {json.dumps(dict(event, sid=sid))}\n\n".encode())
                 self.wfile.flush()

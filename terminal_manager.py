@@ -2124,7 +2124,10 @@ def _reader_loop(view):
                 view.scrollback.extend(data)
                 if len(view.scrollback) > SCROLLBACK_MAX:
                     _trim_scrollback(view.scrollback, SCROLLBACK_MAX)
-                view.broadcast({"type": "output",
+                # `t` is when the shell produced it. The stream uses it to see a
+                # window that has fallen behind (see STALE_OUTPUT_S in server.py)
+                # and jump it to the present instead of replaying old frames.
+                view.broadcast({"type": "output", "t": int(time.time() * 1000),
                                 "data": base64.b64encode(data).decode("ascii")})
     finally:
         # Mark dead before announcing, so anyone who checks .alive on the way

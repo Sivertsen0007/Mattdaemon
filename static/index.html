@@ -1571,7 +1571,7 @@
   // pane's output, so it is still exactly what the log needs to catch.
   const diag = { keys: 0, lagMax: 0,
                  echo: { local: [], vps: [] }, post: { local: [], vps: [] },
-                 stream: { stalls: 0, reconnects: 0, desyncs: 0, ended: 0, noecho: 0 } };
+                 stream: { stalls: 0, reconnects: 0, desyncs: 0, ended: 0, noecho: 0, stale: 0 } };
   const typedAt = {};                       // sid -> first unanswered key (ms)
   const echoWaitSince = {};                 // sid -> first unechoed typed key (epoch ms)
   const diagHost = sid => (sid || '').startsWith('vps:') ? 'vps' : 'local';
@@ -1589,7 +1589,7 @@
                    echo: diag.echo, post: diag.post, stream: diag.stream };
     diag.keys = 0; diag.lagMax = 0;
     diag.echo = { local: [], vps: [] }; diag.post = { local: [], vps: [] };
-    diag.stream = { stalls: 0, reconnects: 0, desyncs: 0, ended: 0, noecho: 0 };
+    diag.stream = { stalls: 0, reconnects: 0, desyncs: 0, ended: 0, noecho: 0, stale: 0 };
     fetch('/api/diag/latency', { method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body) }).catch(() => {});
@@ -1706,6 +1706,20 @@
       .catch(dropped);
   }
 
+  // How old output may be on arrival before it counts as a backlog. Local
+  // output reaches a live window in a few milliseconds and a vps: one in a few
+  // hundred, so this only ever trips for a window that fell behind.
+  const STALE_OUTPUT_MS = 3000;
+  let staleReopenAt = 0;
+  function skipStale() {
+    const now = Date.now();
+    if (now - staleReopenAt < 2000) return;   // one re-open per backlog, not one per frame
+    staleReopenAt = now;
+    diag.stream.stale = (diag.stream.stale || 0) + 1;
+    stream.retries = 0;
+    openStream(streamSids());
+  }
+
   /// One event off the merged stream, routed to the pane that owns it.
   function handleEvent(evt) {
     const pane = evt.sid ? panes[evt.sid] : null;
@@ -1723,6 +1737,16 @@
       //
       // Clearing first costs nothing: the replay carries everything the buffer
       // held anyway.
+      // Output that is already old on arrival is a backlog: this window was
+      // paused (macOS does that to one sitting behind others) and the stream
+      // kept filling. Drawing it would replay every stale frame before the one
+      // showing what you just typed. Skip it and re-open instead - the fresh
+      // attach replays the screen as it is now. The server does the same from
+      // its end (STALE_OUTPUT_S); this catches what was already in the socket.
+      if (evt.type === 'output' && evt.t && Date.now() - evt.t > STALE_OUTPUT_MS) {
+        skipStale();
+        return;
+      }
       if (evt.type === 'replay') pane.term.reset();
       pane.term.write(Uint8Array.from(atob(evt.data), c => c.charCodeAt(0)));
       const t0 = typedAt[evt.sid];
@@ -1734,6 +1758,11 @@
       }
       echoWaitSince[evt.sid] = 0;
       reopenTries = 0;    // bytes are flowing; a later stall starts fresh
+      return;
+    }
+
+    if (evt.type === 'desync' && evt.reason === 'stale') {
+      skipStale();
       return;
     }
 
