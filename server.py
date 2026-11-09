@@ -70,6 +70,7 @@ STATIC_DIR = os.path.join(HERE, "static")
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import setup  # noqa: E402  (must follow the sys.path line above)
+import updater  # noqa: E402
 
 # Content types for the handful of things we serve out of static/.
 _CONTENT_TYPES = {
@@ -237,6 +238,27 @@ def _vps_post_full(path, body, timeout=None):
             return e.code, {"ok": False, "error": "vps http %s" % e.code}
     except Exception as e:
         return 0, {"ok": False, "error": "vps unreachable: %s" % e}
+
+
+_vps_agents_cache = (0.0, frozenset())
+
+
+def _vps_agent_names():
+    """The agent names the box can start, e.g. an extra Claude account that is
+    also signed in there (~/.claude-<id> on the box). Cached for a minute; a box
+    that is down or too old to answer has just the two built-in agents."""
+    global _vps_agents_cache
+    ts, names = _vps_agents_cache
+    if time.time() - ts < 60:
+        return names
+    names = frozenset(("claude", "codex"))
+    if _vps_enabled():
+        res = _vps_get("/api/terminal/agents")
+        if res and isinstance(res.get("agents"), list):
+            names = frozenset(a.get("name") for a in res["agents"]
+                              if isinstance(a, dict) and a.get("name"))
+    _vps_agents_cache = (time.time(), names)
+    return names
 
 
 def _vps_start(name=None, autostart=False, agent=None):
@@ -1448,7 +1470,7 @@ def record_latency(data):
             "server_input": server_in,
             "loop_lag_max": round(float(data.get("lagMax") or 0)),
             "stream": {k: int((data.get("stream") or {}).get(k) or 0)
-                       for k in ("stalls", "reconnects", "desyncs", "ended")},
+                       for k in ("stalls", "reconnects", "desyncs", "ended", "noecho")},
             "mem": _mem_snapshot(),
         }
         try:
@@ -1519,11 +1541,11 @@ def latency_report(days=7, path=None):
         lag = [r.get("loop_lag_max", 0) for r in rs]
         swap = [(r.get("mem") or {}).get("swap_used_mb", 0) for r in rs]
         st = {k: sum((r.get("stream") or {}).get(k, 0) for r in rs)
-              for k in ("stalls", "reconnects", "desyncs", "ended")}
+              for k in ("stalls", "reconnects", "desyncs", "ended", "noecho")}
         out.append("  page froze >1s: %d min   worst freeze %dms   swap max %dMB"
                    % (sum(1 for x in lag if x >= 1000), max(lag or [0]), max(swap or [0])))
         out.append("  stream: %(stalls)d stalls, %(reconnects)d reconnects, "
-                   "%(desyncs)d desyncs, %(ended)d sources ended" % st)
+                   "%(desyncs)d desyncs, %(ended)d sources ended, %(noecho)d deaf panes healed" % st)
         out.append("")
 
     # The minutes that felt bad, and what else was true in them. This is the
@@ -1636,6 +1658,12 @@ class TerminalHandler(BaseHTTPRequestHandler):
             self._serve_static(path[len("/static/"):])
             return
 
+        # ── updates ── (before the setup gate: a half-set-up copy may still update)
+        if path == "/api/update/status":
+            qs = parse_qs(urlparse(self.path).query)
+            self._json(200, updater.status(force=qs.get("force", ["0"])[0] == "1"))
+            return
+
         if path == "/api/setup/state":
             qs = parse_qs(urlparse(self.path).query)
             force = qs.get("force", [""])[0] in ("1", "true", "yes")
@@ -1662,7 +1690,11 @@ class TerminalHandler(BaseHTTPRequestHandler):
             self._json(200, lifeboat_state())
             return
         if path == "/api/terminal/agents":
-            self._json(200, {"ok": True, "agents": terminal_manager.agent_list()})
+            agents = terminal_manager.agent_list()
+            box = _vps_agent_names()
+            for a in agents:
+                a["onVps"] = a["name"] in box
+            self._json(200, {"ok": True, "agents": agents})
             return
         if path == "/api/terminal/states":
             t0 = time.time()
@@ -1999,6 +2031,16 @@ class TerminalHandler(BaseHTTPRequestHandler):
         # ── setup ──
         # These are the only POSTs that work before setup is finished; they are
         # what finishes it.
+        if path == "/api/update/apply":
+            self._json(200, updater.apply_update())
+            return
+        if path == "/api/update/skip":
+            self._json(200, updater.skip_version(str(data.get("version", ""))))
+            return
+        if path == "/api/update/ack":
+            self._json(200, updater.ack_updated())
+            return
+
         if path == "/api/setup/folder":
             self._json(200, setup_save_folder(data.get("path", "")))
             return

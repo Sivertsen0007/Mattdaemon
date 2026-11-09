@@ -41,6 +41,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 # 1. Native binary + Info.plist + app icon
 cp "$BIN_PATH/MLSuiteTerminal" "$APP/Contents/MacOS/MLSuiteTerminal"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
+# The version lives in one place, ../VERSION, which release.sh bumps. Stamped
+# into the bundle here so Finder, About and the updater all agree on it.
+VERSION="$(tr -d '[:space:]' < ../VERSION)"
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
+echo "==> Version $VERSION"
 cp Resources/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 # 2. Python engine (lives one level up in mac-terminal/). Copied into the
@@ -51,6 +57,8 @@ cp ../terminal_manager.py "$APP/Contents/Resources/terminal_manager.py"
 cp ../terminal_worktree.py "$APP/Contents/Resources/terminal_worktree.py"
 cp ../setup.py "$APP/Contents/Resources/setup.py"
 cp ../lifeboat.py "$APP/Contents/Resources/lifeboat.py"
+cp ../updater.py "$APP/Contents/Resources/updater.py"
+cp ../VERSION "$APP/Contents/Resources/VERSION"
 rm -rf "$APP/Contents/Resources/static"
 cp -R ../static "$APP/Contents/Resources/static"
 
@@ -58,7 +66,7 @@ cp -R ../static "$APP/Contents/Resources/static"
 #     project but forgotten in the copy list above is otherwise a crash on first
 #     launch, and every step between here and there would have looked fine.
 echo "==> Verifying the bundled engine imports"
-if ! ( cd "$APP/Contents/Resources" && python3 -c "import terminal_worktree, terminal_manager, setup" ); then
+if ! ( cd "$APP/Contents/Resources" && python3 -c "import terminal_worktree, terminal_manager, setup, updater" ); then
     echo "!! the bundled engine does not import - a module is missing from the copy list above" >&2
     exit 1
 fi

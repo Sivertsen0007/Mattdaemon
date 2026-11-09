@@ -22,7 +22,7 @@ loopback only. Carries nobody's account.
 
 | | |
 |---|---|
-| **Start here** | [Install](#install) · [What it is](#what-it-is) · [Two ways to run it](#two-ways-to-run-it) · [First run](#first-run) |
+| **Start here** | [Install](#install) · [Updates](#updates) · [What it is](#what-it-is) · [Two ways to run it](#two-ways-to-run-it) · [First run](#first-run) |
 | **How it works** | [Architecture](#architecture) · [The four pieces](#the-four-pieces) · [A keystroke's journey](#a-keystrokes-journey) · [Session state](#session-state-what-the-dots-mean) · [Status hooks](#the-hooks-that-make-the-dots-honest) |
 | **Features** | [The window](#the-window) · [Copy and paste](#copy-and-paste) · [Handover: Mac to VPS](#handover-mac-to-vps) · [Handover: VPS to Mac](#handover-vps-to-mac) · [Uploads](#uploads) |
 | **Operating it** | [File access, once](#file-access-granted-once-not-every-week) · [Configuration](#configuration) · [Give it to someone else](#give-it-to-someone-else) |
@@ -32,26 +32,86 @@ loopback only. Carries nobody's account.
 
 ## Install
 
-**Download (Apple Silicon Mac, macOS 13+):**
+Mattdaemon is a Mac app. Paste the blocks into Terminal, one at a time.
 
-1. Get `Mattdaemon-macOS-arm64.zip` from the
-   [latest release](https://github.com/Sivertsen0007/Mattdaemon/releases/latest) and unzip it.
-2. Drag `Mattdaemon.app` into `Applications`.
-3. It is not notarised by Apple, so macOS blocks the first launch. Either
-   right-click the app → **Open** → **Open**, or run once:
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/Mattdaemon.app
-   ```
-4. Install what it drives, if you have not already:
-   ```sh
-   xcode-select --install          # gives you python3
-   brew install tmux
-   npm install -g @anthropic-ai/claude-code
-   ```
-5. Open it. The setup card asks for your own Claude Code login and the folder your
-   sessions should start in. Nothing of anyone else's comes with the app.
+### Mac (Apple Silicon, macOS 13+)
 
-On an Intel Mac, or to build it yourself, see [Two ways to run it](#two-ways-to-run-it).
+```sh
+# 1. What Mattdaemon drives: python3, tmux and Claude Code
+xcode-select --install                     # python3 + git; skip if already installed
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"   # Homebrew; skip if you have it
+brew install tmux
+curl -fsSL https://claude.ai/install.sh | bash
+```
+
+```sh
+# 2. The app itself, from the latest release, into ~/Applications
+mkdir -p ~/Applications
+curl -fL -o /tmp/Mattdaemon.zip \
+  https://github.com/Sivertsen0007/Mattdaemon/releases/latest/download/Mattdaemon-macOS-arm64.zip
+ditto -x -k /tmp/Mattdaemon.zip ~/Applications && rm /tmp/Mattdaemon.zip
+xattr -dr com.apple.quarantine ~/Applications/Mattdaemon.app   # not notarised by Apple
+```
+
+```sh
+# 3. Optional but recommended: the hooks that make the status dots accurate
+git clone https://github.com/Sivertsen0007/Mattdaemon.git ~/Mattdaemon-src
+bash ~/Mattdaemon-src/hooks/install.sh
+```
+
+```sh
+# 4. Start it
+open ~/Applications/Mattdaemon.app
+```
+
+The setup card asks for your own Claude Code login and the folder your sessions
+should start in. Nothing of anyone else's comes with the app. From here on the app
+updates itself (see [Updates](#updates)).
+
+### Mac (Intel, or building it yourself)
+
+The release is Apple Silicon only. On an Intel Mac, or to run your own changes,
+build it (step 1 above first):
+
+```sh
+git clone https://github.com/Sivertsen0007/Mattdaemon.git ~/Mattdaemon-src
+cd ~/Mattdaemon-src/macapp
+./make-signing-cert.sh      # once per Mac, so macOS remembers its file access
+./build.sh --install        # builds, signs, puts it in ~/Applications and starts it
+bash ../hooks/install.sh
+```
+
+A copy you built yourself is signed with your own certificate, so it cannot verify
+releases. Update it with `git pull` and `./build.sh --install` again.
+
+### Updates
+
+A Mac copy installed from a release keeps itself up to date. A few seconds after
+it starts, and then once a day while it stays open, it asks GitHub for the latest
+release. When there is a newer one, a box in the corner shows the version and
+what is new, with **Update now**, **Later** and **Skip this version**. Update now
+downloads the zip, checks it against the SHA-256 GitHub publishes, checks it is
+signed by the same certificate as the copy you are running, then quits, swaps the
+app and starts it again. Your sessions keep running through it, because they live
+in tmux, not in the app. If the swap fails, the old app is put back. Settings >
+This install shows your version and has **Check for updates**.
+
+A copy built from source still shows the box, but tells you to update with
+`git pull` instead.
+
+### Cutting a release
+
+On the Mac that holds the "Mattdaemon Local Signing" certificate, from a clean
+`main`:
+
+```sh
+./release.sh patch --notes notes.md     # or minor / major / 1.2.3, add --dry-run to try it
+```
+
+It bumps `VERSION`, builds and signs, zips to `dist/`, commits, tags, pushes and
+creates the GitHub Release. It refuses to publish a build that is not signed with
+that certificate, because every installed copy would refuse it. The notes are
+what people read in the update box, so write them for users.
 
 ---
 
