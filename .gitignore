@@ -3,3 +3,4 @@ __pycache__/
 macapp/build/
 macapp/.build/
 mts-config.json
+dist/

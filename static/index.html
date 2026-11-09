@@ -94,6 +94,26 @@
     border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.5);font-family:'JetBrains Mono',monospace;
     opacity:0;transition:opacity .18s;pointer-events:none;max-width:70vw;text-align:center}
   .toast.show{opacity:1}
+
+  /* ---- update offer (bottom right; see "updates" in the script) ---- */
+  .upd{display:none;position:fixed;right:18px;bottom:18px;z-index:115;width:340px;max-width:calc(100vw - 32px);
+    background:#1c1c1f;border:1px solid var(--border);border-radius:10px;padding:14px 14px 12px;
+    box-shadow:0 12px 32px rgba(0,0,0,.55);font-size:12.5px;color:var(--ink)}
+  .upd.open{display:block}
+  .upd .u-title{font-weight:600;font-size:13.5px;margin-bottom:2px}
+  .upd .u-sub{color:var(--inkMute);font-size:11.5px;margin-bottom:10px}
+  .upd .u-notes{white-space:pre-wrap;color:var(--ink);background:var(--surface2);border:1px solid var(--border);
+    border-radius:7px;padding:8px 10px;max-height:180px;overflow:auto;font-size:12px;line-height:1.45}
+  .upd .u-notes:empty{display:none}
+  .upd .u-msg{color:var(--inkMute);font-size:11.5px;margin-top:9px;min-height:0}
+  .upd .u-msg.bad{color:var(--red)}
+  .upd .u-bar{height:4px;border-radius:2px;background:var(--surface2);margin-top:9px;overflow:hidden;display:none}
+  .upd .u-bar i{display:block;height:100%;width:0;background:var(--green);transition:width .2s}
+  .upd.busy .u-bar{display:block}
+  .upd .u-acts{display:flex;gap:6px;margin-top:11px;align-items:center}
+  .upd .u-acts .btn-primary,.upd .u-acts .btn-ghost{padding:6px 11px;font-size:12px;border-radius:6px;cursor:pointer}
+  .upd .u-acts .linkish{margin-left:auto;font-size:11.5px}
+  .upd.busy .u-acts{display:none}
   .term.dragover{outline:2px dashed var(--stIdle);outline-offset:-6px}
 
   /* ---- body: sidebar + terminal ---- */
@@ -961,6 +981,10 @@
 
       <div class="sect">
         <h4>This install</h4>
+        <div class="hint" style="margin-bottom:8px">
+          <span id="setVersion">Version ...</span>
+          <button class="linkish" id="setCheckUpdate" style="margin-left:8px">Check for updates</button>
+        </div>
         <div class="hint" id="setConfigPath" style="margin-bottom:10px"></div>
         <button class="linkish" id="setRerun">Run first-time setup again</button>
       </div>
@@ -971,6 +995,15 @@
       <button class="btn-primary" id="settingsDone">Done</button>
     </div>
   </div>
+</div>
+
+<div class="upd" id="upd" role="dialog" aria-live="polite">
+  <div class="u-title" id="updTitle"></div>
+  <div class="u-sub" id="updSub"></div>
+  <div class="u-notes" id="updNotes"></div>
+  <div class="u-bar"><i id="updBar"></i></div>
+  <div class="u-msg" id="updMsg"></div>
+  <div class="u-acts" id="updActs"></div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -5281,6 +5314,146 @@
   });
   window.addEventListener('focus', () => reviveStreams(STALE_MS, true));
   window.addEventListener('online', () => reviveStreams(0, true));
+
+  // ── updates ──────────────────────────────────────────────────────────────
+  // The engine asks GitHub Releases (updater.py). When there is a newer version
+  // this offers it once per launch - notes, "Update now" - and on yes the engine
+  // downloads, verifies and hands over to a script that swaps the app and
+  // starts it again. Sessions are tmux, so they are all there afterwards.
+  const updEl = document.getElementById('upd');
+  const updTitle = document.getElementById('updTitle');
+  const updSub = document.getElementById('updSub');
+  const updNotes = document.getElementById('updNotes');
+  const updMsg = document.getElementById('updMsg');
+  const updBar = document.getElementById('updBar');
+  const updActs = document.getElementById('updActs');
+  let updDismissed = null;      // version you said "Later" to, this launch
+  let updPollTimer = null;
+
+  function updButton(label, cls, fn) {
+    const b = document.createElement('button');
+    b.className = cls;
+    b.textContent = label;
+    b.addEventListener('click', fn);
+    updActs.appendChild(b);
+    return b;
+  }
+  function updSetMsg(text, bad) {
+    updMsg.textContent = text || '';
+    updMsg.classList.toggle('bad', !!bad);
+  }
+  function closeUpdate() { updEl.classList.remove('open', 'busy'); }
+
+  async function fetchUpdate(force) {
+    try {
+      return await (await fetch('/api/update/status' + (force ? '?force=1' : ''))).json();
+    } catch { return null; }
+  }
+
+  function showOffer(st) {
+    const rel = st.release;
+    updEl.classList.remove('busy');
+    updTitle.textContent = 'Mattdaemon ' + rel.version + ' is ready';
+    updSub.textContent = 'You have ' + st.current + '. What is new:';
+    updNotes.textContent = rel.notes || 'No notes for this release.';
+    updActs.innerHTML = '';
+    updSetMsg('');
+    if (st.canInstall) {
+      updSetMsg('Mattdaemon restarts to finish. Your sessions keep running.');
+      updButton('Update now', 'btn-primary', startUpdate);
+      updButton('Later', 'btn-ghost', () => { updDismissed = rel.version; closeUpdate(); });
+    } else {
+      updSetMsg("This copy can't update itself: " + (st.cannotInstall || 'unknown reason') + '.', true);
+      updButton('Download', 'btn-primary', () => openExternal(rel.page, 'Opened in your browser'));
+      updButton('Later', 'btn-ghost', () => { updDismissed = rel.version; closeUpdate(); });
+    }
+    updButton('Skip this version', 'linkish', async () => {
+      try {
+        await fetch('/api/update/skip', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ version: rel.version }) });
+      } catch {}
+      closeUpdate();
+      toast('Skipped ' + rel.version + ' - Settings can still install it');
+    });
+    updEl.classList.add('open');
+  }
+
+  function showJustUpdated(ju) {
+    updEl.classList.remove('busy');
+    updTitle.textContent = 'Updated to ' + ju.version;
+    updSub.textContent = ju.from ? 'From ' + ju.from + '. What is new:' : 'What is new:';
+    updNotes.textContent = ju.notes || '';
+    updSetMsg('');
+    updActs.innerHTML = '';
+    updButton('Nice', 'btn-primary', async () => {
+      closeUpdate();
+      try { await fetch('/api/update/ack', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: '{}' }); } catch {}
+    });
+    updEl.classList.add('open');
+  }
+
+  async function startUpdate() {
+    updEl.classList.add('busy');
+    updBar.style.width = '0';
+    updSetMsg('Starting...');
+    let j = {};
+    try {
+      j = await (await fetch('/api/update/apply', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: '{}' })).json();
+    } catch { j = { ok: false, error: 'the app engine did not answer' }; }
+    if (!j.ok) { updFailed(j.error); return; }
+    clearInterval(updPollTimer);
+    updPollTimer = setInterval(pollUpdate, 600);
+  }
+
+  function updFailed(err) {
+    clearInterval(updPollTimer);
+    updEl.classList.remove('busy');
+    updSetMsg('Update failed: ' + (err || 'unknown error') + '. Nothing was changed.', true);
+  }
+
+  async function pollUpdate() {
+    let st;
+    try { st = await (await fetch('/api/update/status')).json(); }
+    catch { updSetMsg('Restarting...'); return; }   // the engine has gone: the swap is under way
+    const job = st.job || {};
+    if (job.phase === 'downloading') {
+      updBar.style.width = (job.progress || 0) + '%';
+      updSetMsg('Downloading... ' + (job.progress || 0) + '%');
+    } else if (job.phase === 'verifying') {
+      updBar.style.width = '100%';
+      updSetMsg('Checking the download...');
+    } else if (job.phase === 'installing') {
+      updBar.style.width = '100%';
+      updSetMsg('Restarting Mattdaemon...');
+    } else if (job.phase === 'error') {
+      updFailed(job.error);
+    }
+  }
+
+  async function checkForUpdate(manual) {
+    const st = await fetchUpdate(manual);
+    const verEl = document.getElementById('setVersion');
+    if (st && verEl) verEl.textContent = 'Version ' + st.current;
+    if (!st) { if (manual) toast('Could not check for updates'); return; }
+    if (st.justUpdated) { showJustUpdated(st.justUpdated); return; }
+    if (st.available && st.release) {
+      if (manual || (!st.skipped && updDismissed !== st.release.version)) showOffer(st);
+      return;
+    }
+    if (manual) toast(st.error ? 'Could not check: ' + st.error : 'You have the latest version (' + st.current + ')');
+  }
+
+  document.getElementById('setCheckUpdate').addEventListener('click', () => checkForUpdate(true));
+  // Shortly after start (the engine checks GitHub on the first ask), then a few
+  // times a day; the engine caches, so the timer costs nothing between checks.
+  // Only the main window offers it; a popped-out session window stays quiet.
+  if (!soloSid) {
+    setTimeout(() => checkForUpdate(false), 4000);
+    setInterval(() => { if (!updEl.classList.contains('open')) checkForUpdate(false); }, 3 * 3600 * 1000);
+  }
 
   // ── first run ────────────────────────────────────────────────────────────
   // The app ships with nobody's folder and nobody's login. This screen collects

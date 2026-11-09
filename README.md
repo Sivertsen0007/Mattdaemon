@@ -53,6 +53,32 @@ loopback only. Carries nobody's account.
 
 On an Intel Mac, or to build it yourself, see [Two ways to run it](#two-ways-to-run-it).
 
+**Updates.** A copy installed from a release keeps itself up to date. A few
+seconds after it starts, and every few hours after that, it asks GitHub for the
+latest release. When there is a newer one, a box in the corner shows the
+version and what is new, with **Update now**, **Later** and **Skip this
+version**. Update now downloads the zip, checks it against the SHA-256 GitHub
+publishes, checks it is signed by the same certificate as the copy you are
+running, then quits, swaps the app and starts it again. Your sessions keep
+running through it, because they live in tmux, not in the app. If the swap
+fails, the old app is put back. Settings > This install shows your version and
+has **Check for updates**.
+
+A copy you built and signed yourself cannot verify a release against its own
+certificate. It still shows the box, but with **Download** instead.
+
+**Cutting a release** (on the Mac that holds the "Mattdaemon Local Signing"
+certificate, from a clean `main`):
+
+```sh
+./release.sh patch --notes notes.md     # or minor / major / 1.2.3, add --dry-run to try it
+```
+
+It bumps `VERSION`, builds and signs, zips to `dist/`, commits, tags, pushes and
+creates the GitHub Release. It refuses to publish a build that is not signed with
+that certificate, because every installed copy would refuse it. The notes are
+what people read in the update box, so write them for users.
+
 ---
 
 ## What it is

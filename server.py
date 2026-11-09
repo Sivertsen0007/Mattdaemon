@@ -70,6 +70,7 @@ STATIC_DIR = os.path.join(HERE, "static")
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import setup  # noqa: E402  (must follow the sys.path line above)
+import updater  # noqa: E402
 
 # Content types for the handful of things we serve out of static/.
 _CONTENT_TYPES = {
@@ -1657,6 +1658,12 @@ class TerminalHandler(BaseHTTPRequestHandler):
             self._serve_static(path[len("/static/"):])
             return
 
+        # ── updates ── (before the setup gate: a half-set-up copy may still update)
+        if path == "/api/update/status":
+            qs = parse_qs(urlparse(self.path).query)
+            self._json(200, updater.status(force=qs.get("force", ["0"])[0] == "1"))
+            return
+
         if path == "/api/setup/state":
             qs = parse_qs(urlparse(self.path).query)
             force = qs.get("force", [""])[0] in ("1", "true", "yes")
@@ -2024,6 +2031,16 @@ class TerminalHandler(BaseHTTPRequestHandler):
         # ── setup ──
         # These are the only POSTs that work before setup is finished; they are
         # what finishes it.
+        if path == "/api/update/apply":
+            self._json(200, updater.apply_update())
+            return
+        if path == "/api/update/skip":
+            self._json(200, updater.skip_version(str(data.get("version", ""))))
+            return
+        if path == "/api/update/ack":
+            self._json(200, updater.ack_updated())
+            return
+
         if path == "/api/setup/folder":
             self._json(200, setup_save_folder(data.get("path", "")))
             return
