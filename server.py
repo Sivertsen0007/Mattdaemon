@@ -1658,6 +1658,11 @@ class TerminalHandler(BaseHTTPRequestHandler):
             self._serve_static(path[len("/static/"):])
             return
 
+        if path == "/api/window/port":
+            qs = parse_qs(urlparse(self.path).query)
+            self._json(200, window_port(qs.get("sid", [""])[0]))
+            return
+
         # ── updates ── (before the setup gate: a half-set-up copy may still update)
         if path == "/api/update/status":
             qs = parse_qs(urlparse(self.path).query)
@@ -2320,6 +2325,44 @@ def _make_server(port):
     """A loopback-only threaded HTTP server. Threaded so an open SSE stream
     never blocks other requests (input/resize/stop must land while streaming)."""
     return ThreadingHTTPServer(("127.0.0.1", port), TerminalHandler)
+
+
+# ── a port of its own for each pop-out window ──────────────────────────────
+# WebKit allows about six connections per host:port, and every window in the
+# app shares that budget. Each window holds one output stream open for good,
+# so seven pop-outs plus the main window left NO connection for anything else:
+# keystrokes typed into a pop-out sat in WebKit's queue for 30-56s (the latency
+# log, 2026-11-09 11:31), and the windows looked frozen and slow.
+#
+# The budget is per host:port, so each pop-out is served from its own extra
+# listener on a free port - same handler, same engine, its own six. A session
+# that pops out again gets the port it had, and the number of listeners is
+# capped; past the cap the oldest one is shared, which is no worse than before.
+_WINDOW_PORTS_MAX = 16
+_window_ports = {}            # sid -> port
+_window_servers = []          # [(port, server)], oldest first
+_window_lock = threading.Lock()
+
+
+def window_port(sid):
+    with _window_lock:
+        port = _window_ports.get(sid)
+        if port:
+            return {"ok": True, "port": port}
+        if len(_window_servers) < _WINDOW_PORTS_MAX:
+            try:
+                httpd = _make_server(0)
+            except OSError as e:
+                return {"ok": False, "error": str(e)}
+            port = httpd.server_address[1]
+            threading.Thread(target=httpd.serve_forever, daemon=True).start()
+            _window_servers.append((port, httpd))
+        else:
+            # Hand out the port given out longest ago.
+            port = _window_servers[0][0]
+            _window_servers.append(_window_servers.pop(0))
+        _window_ports[sid] = port
+        return {"ok": True, "port": port}
 
 
 # ── the lifeboat ──────────────────────────────────────────────────────────

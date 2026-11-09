@@ -59,6 +59,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        terminating = true
+        saveOpenPopOuts()
         stopServer()
     }
 
@@ -170,6 +172,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
             guard let raw = body["url"] as? String, let url = URL(string: raw),
                   url.scheme == "http" || url.scheme == "https" else { return }
             NSWorkspace.shared.open(url)
+        case "popsToRestore":
+            // The main page asks once it has loaded: which pop-outs were open
+            // when the app last quit. Handed over once, then forgotten - the
+            // windows it reopens are saved again at the next quit.
+            let saved = UserDefaults.standard.array(forKey: AppDelegate.openPopOutsKey) as? [String] ?? []
+            UserDefaults.standard.removeObject(forKey: AppDelegate.openPopOutsKey)
+            let encoded = (try? JSONSerialization.data(withJSONObject: saved))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "[]"
+            message.webView?.evaluateJavaScript(
+                "window.__mtsRestorePops && window.__mtsRestorePops(\(encoded))",
+                completionHandler: nil)
         case "badge":
             // How many sessions are waiting on you, on the Dock icon. The one
             // part of Focus mode that still works with the window behind
@@ -225,6 +238,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
     // one is not closing the session; the grid simply takes it back.
 
     private var popWindows: [String: NSWindow] = [:]
+    /// Open order, so they come back in the order they were opened.
+    private var popOrder: [String] = []
+    /// Set while quitting: windows going away then are not "closed by you",
+    /// so they must not hand their session back to the grid.
+    private var terminating = false
+    static let openPopOutsKey = "MattdaemonOpenPopOuts"
+
+    /// Which pop-outs are open, for the next launch to reopen.
+    private func saveOpenPopOuts() {
+        let open = popOrder.filter { popWindows[$0] != nil }
+        UserDefaults.standard.set(open, forKey: AppDelegate.openPopOutsKey)
+        UserDefaults.standard.synchronize()
+    }
 
     private func popOut(sid: String, path: String, title: String) {
         // Already out: raise it rather than opening a second window onto the
@@ -234,7 +260,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        guard let url = URL(string: "http://127.0.0.1:\(boundPort)\(path)") else { return }
+        // The page asks the engine for a port of this window's own and sends a
+        // full loopback URL (see window_port in server.py: each window gets its
+        // own connection budget). An older page sends a bare path.
+        let target = path.hasPrefix("http://127.0.0.1:") ? path
+                                                         : "http://127.0.0.1:\(boundPort)\(path)"
+        guard let url = URL(string: target), url.host == "127.0.0.1" else { return }
 
         let config = WKWebViewConfiguration()
         config.websiteDataStore = .default()
@@ -266,14 +297,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
         NSApp.activate(ignoringOtherApps: true)
 
         popWindows[sid] = win
+        popOrder.removeAll { $0 == sid }
+        popOrder.append(sid)
     }
 
     /// A pop-out window closing hands its session back to the grid.
     func windowWillClose(_ notification: Notification) {
-        guard let closing = notification.object as? NSWindow,
-              let sid = popWindows.first(where: { $0.value === closing })?.key
+        guard let closing = notification.object as? NSWindow else { return }
+        // Closing the main window quits the app, and the pop-outs go with it.
+        // They are remembered (applicationWillTerminate) and reopened at the
+        // next launch, where they were. A pop-out on its own, with no main
+        // window to return to, was a window you could not get back from.
+        if closing === window {
+            if !terminating { NSApp.terminate(nil) }
+            return
+        }
+        guard let sid = popWindows.first(where: { $0.value === closing })?.key
         else { return }
+        if terminating { return }
         popWindows.removeValue(forKey: sid)
+        popOrder.removeAll { $0 == sid }
         let escaped = sid.replacingOccurrences(of: "\\", with: "\\\\")
                          .replacingOccurrences(of: "'", with: "\\'")
         webView?.evaluateJavaScript(
@@ -547,6 +590,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
         // our strong `window` reference would be left dangling, and re-showing
         // it is then undefined. Own the lifetime here instead.
         window.isReleasedWhenClosed = false
+        window.delegate = self
         window.contentView = webView
         window.center()
         // Remember size/position across launches.

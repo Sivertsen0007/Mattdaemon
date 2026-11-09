@@ -18,8 +18,14 @@ and pane placement the frontend keeps is keyed on it, so they all hold.
 Lost vs closed. A session that disappears while this process is watching was
 closed on purpose (stop, `exit`) and is forgotten. A session that is in the
 record but was never seen alive by THIS process went down with the machine.
-The one exception is the tmux server dying under a running app: several
-sessions vanishing at once with the server gone is a crash, not a close.
+
+Only a real shutdown counts. A session is offered back only if it was last
+seen alive BEFORE the machine last booted - i.e. the machine has been off
+since. Sessions that vanish while the machine stays up (the tmux server
+killed or crashed, a quit-and-reopen with sessions closed in between) are let
+go, not offered: the user only wants the lifeboat after the Mac was off.
+Where the boot time cannot be read, the old rule applies (never seen alive by
+this process = lost).
 
 Shared by the Mac app and the box. It only needs these from its terminal
 manager (`tm`): _list_sessions_raw(), session_cwd(), start_session() taking
@@ -40,6 +46,36 @@ KEEP_LOST = 7 * 24 * 3600          # a lost session is offered for a week
 INTERRUPTED_NOTE = ("You were interrupted: the machine this session ran on went "
                     "down mid-turn. Check where you got to before carrying on, "
                     "and do not repeat anything that already went out.")
+
+_BOOT_SLACK = 5.0                  # seconds: last_seen this close to boot still counts
+
+
+def _boot_time():
+    """When this machine last started (epoch seconds), or None if unknown."""
+    try:
+        import subprocess
+        out = subprocess.run(["sysctl", "-n", "kern.boottime"], capture_output=True,
+                             text=True, timeout=5).stdout
+        if "sec =" in out:                     # macOS: "{ sec = 1794194860, usec = ... }"
+            return float(out.split("sec =")[1].split(",")[0])
+    except Exception:
+        pass
+    try:
+        with open("/proc/stat") as f:          # Linux (the box)
+            for line in f:
+                if line.startswith("btime "):
+                    return float(line.split()[1])
+    except Exception:
+        pass
+    return None
+
+
+def _went_down_with_machine(e, boot):
+    """True if the machine has been off since this session was last alive."""
+    if boot is None:
+        return True                            # cannot tell: keep the old rule
+    return float(e.get("last_seen") or 0) < boot - _BOOT_SLACK
+
 
 _lock = threading.Lock()
 _record = {}            # sid -> entry
@@ -113,24 +149,29 @@ def snapshot_once():
             e.pop("lost_at", None)
             _record[sid] = e
 
+        boot = _boot_time()
         if answered:
             vanished = [sid for sid in _record
                         if sid in _seen_live and sid not in live_ids
                         and not _record[sid].get("lost_at")]
+            # Gone while we watched, and the machine is still up (we are
+            # running on it): closed, or the tmux server died - either way not
+            # a shutdown. Only an unreadable boot time keeps the old crash rule.
             server_gone = not live
-            if server_gone and len(vanished) >= 2:
-                # The tmux server died under us: that is a crash, keep them all.
-                for sid in vanished:
+            for sid in vanished:
+                if boot is None and server_gone and len(vanished) >= 2:
                     _record[sid]["lost_at"] = now
-                    _seen_live.discard(sid)
-            else:
-                for sid in vanished:          # closed on purpose
+                else:
                     _record.pop(sid, None)
-                    _seen_live.discard(sid)
+                _seen_live.discard(sid)
 
-        # Never seen alive by this process and not in tmux: lost with the machine.
+        # Never seen alive by this process and not in tmux: lost with the
+        # machine if the machine has been off since, otherwise let go.
         for sid, e in list(_record.items()):
             if sid in live_ids or sid in _seen_live:
+                continue
+            if not _went_down_with_machine(e, boot):
+                _record.pop(sid, None)
                 continue
             e.setdefault("lost_at", now)
             if now - e["lost_at"] > KEEP_LOST:

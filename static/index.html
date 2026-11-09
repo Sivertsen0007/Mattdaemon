@@ -1833,12 +1833,22 @@
   //
   // The session keeps running either way - a window is a way of looking at a
   // shell, not the shell itself - so closing one simply returns it to the grid.
-  function popOut(sid) {
+  async function popOut(sid, quiet) {
     if (!sid) return;
-    const url = '/?solo=' + encodeURIComponent(sid);
+    let url = '/?solo=' + encodeURIComponent(sid);
     const bridge = window.webkit && window.webkit.messageHandlers
                 && window.webkit.messageHandlers.mts;
     if (bridge) {
+      // Each pop-out is served from a port of its own. WebKit gives every
+      // window in the app one shared budget of ~6 connections per host:port,
+      // and each window keeps a stream open for good, so a handful of pop-outs
+      // used to leave keystrokes queueing for up to a minute. Own port, own
+      // budget. (A plain browser keeps the relative URL: window.open has to
+      // happen inside the click, with no request in between.)
+      try {
+        const j = await (await fetch('/api/window/port?sid=' + encodeURIComponent(sid))).json();
+        if (j.ok && j.port) url = 'http://127.0.0.1:' + j.port + url;
+      } catch {}
       const s = sessions.find(x => x.id === sid);
       bridge.postMessage({ cmd: 'popOut', sid, url, title: s ? s.name : sid });
     } else if (!window.open(url, 'mts-' + sid, 'width=900,height=600')) {
@@ -1849,8 +1859,29 @@
     for (let i = 0; i < tiles.length; i++) if (tiles[i] === sid) tiles[i] = null;
     saveLayout();
     render();
-    toast('Popped out - close that window to put it back');
+    if (!quiet) toast('Popped out - close that window to put it back');
   }
+
+  /// The native side hands back the pop-outs that were open when the app last
+  /// quit, and they reopen where they were (each window keeps its own frame).
+  /// Sessions load a moment after the page, the box's later still, so this
+  /// waits for each sid to appear - and skips one that is gone for good.
+  window.__mtsRestorePops = async function (sids) {
+    sids = (sids || []).filter(Boolean);
+    const until = Date.now() + 20000;
+    while (sids.some(id => !sessions.some(s => s.id === id)) && Date.now() < until)
+      await new Promise(r => setTimeout(r, 300));
+    let n = 0;
+    for (const sid of sids) {
+      if (popped.has(sid) || !sessions.some(s => s.id === sid)) continue;
+      await popOut(sid, true);
+      n++;
+    }
+    if (n) toast('Reopened ' + n + (n === 1 ? ' pop-out window' : ' pop-out windows'));
+  };
+  if (!soloSid && window.webkit && window.webkit.messageHandlers
+      && window.webkit.messageHandlers.mts)
+    window.webkit.messageHandlers.mts.postMessage({ cmd: 'popsToRestore' });
 
   /// Called by a pop-out window as it closes, and by the native side when its
   /// window goes away, so the session returns to the wall it came from.

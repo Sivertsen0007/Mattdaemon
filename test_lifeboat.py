@@ -112,9 +112,20 @@ def main():
         check(c not in {e["sid"] for e in json.load(open(record))["sessions"]},
               "a session closed while watched is forgotten")
 
-        print("power cut")
+        print("tmux dies, the Mac stays on")
+        saved = json.load(open(record))
         tm._tmux("kill-server")
         importlib.reload(lifeboat)                  # a new app process
+        lifeboat._tm, lifeboat._path = tm, record
+        lifeboat._record.update(lifeboat._load(record))
+        lifeboat.snapshot_once()
+        check(lifeboat.lost() == [], "no recovery offered when the Mac was not switched off")
+
+        print("power cut")
+        json.dump(saved, open(record, "w"))         # the record as it stood
+        importlib.reload(lifeboat)                  # a new app process...
+        boot = time.time() + 60                     # ...on a Mac that has booted since
+        lifeboat._boot_time = lambda: boot
         lifeboat._tm, lifeboat._path = tm, record
         lifeboat._record.update(lifeboat._load(record))
         lifeboat.snapshot_once()
