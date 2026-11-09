@@ -83,7 +83,11 @@ trap 'restore_version; rm -f "$NOTES"' EXIT
 
 ./macapp/build.sh release
 APP="macapp/build/Mattdaemon.app"
-codesign -dv "$APP" 2>&1 | grep -qF "Authority=$SIGN_ID" \
+# -dvv: the Authority line only shows from the second level of detail. Read
+# into a variable first so grep -q cannot cut codesign off under pipefail.
+SIGINFO="$(codesign -dvv "$APP" 2>&1 || true)"
+SIGREQ="$(codesign -d -r- "$APP" 2>&1 || true)"
+[[ "$SIGINFO" == *"Authority=$SIGN_ID"* && "$SIGREQ" == *"certificate leaf"* ]] \
     || die "the build is not signed by \"$SIGN_ID\" - refusing to publish it"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$APP/Contents/Info.plist")" == "$NEW" ]] \
     || die "the build does not carry version $NEW"
