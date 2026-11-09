@@ -95,6 +95,21 @@
     opacity:0;transition:opacity .18s;pointer-events:none;max-width:70vw;text-align:center}
   .toast.show{opacity:1}
 
+  /* ---- bug report (top right button + form; see "bug reports" in the script) ---- */
+  .term-head .bug-btn{padding:4px 9px}
+  #bugBackdrop .modal{width:440px}
+  .bug-field textarea{width:100%;box-sizing:border-box;background:#0f0f10;border:1px solid var(--border);
+    border-radius:6px;color:var(--ink);font-family:'JetBrains Mono',monospace;font-size:12.5px;
+    padding:8px 10px;resize:vertical;min-height:54px;line-height:1.45}
+  .bug-field textarea:focus{outline:none;border-color:#45454b}
+  #bugText{min-height:96px}
+  .bug-shot{display:flex;gap:10px;align-items:flex-start;margin:2px 0 12px;font-size:11.5px;color:var(--inkMute)}
+  .bug-shot input{margin:2px 0 0}
+  .bug-shot img{display:none;max-width:120px;max-height:76px;border:1px solid var(--border);border-radius:4px;margin-left:auto}
+  .bug-shot.on img{display:block}
+  .bug-note{font-size:10.5px;color:var(--inkDim);line-height:1.5;margin:0 0 14px}
+  .bug-err{font-size:11px;color:var(--red);margin:-6px 0 12px;display:none}
+
   /* ---- update offer (bottom right; see "updates" in the script) ---- */
   .upd{display:none;position:fixed;right:18px;bottom:18px;z-index:115;width:340px;max-width:calc(100vw - 32px);
     background:#1c1c1f;border:1px solid var(--border);border-radius:10px;padding:14px 14px 12px;
@@ -656,6 +671,7 @@
         <button class="attach focus-btn" id="btnFocus" title="Focus mode - one session, and a strip of what is waiting (&#8984;0; &#8984;&#8593;/&#8595; walks the sessions)">&#9678; Focus</button>
         <button class="attach rail-btn" id="btnRail" title="Show the session list without leaving Focus (&#8984;&#92;)">&#9636;</button>
         <span class="chip" id="termChip">&#9679; idle</span>
+        <button class="attach bug-btn" id="btnBug" title="Report a bug - it goes straight to the people who build Mattdaemon">&#9873; Report bug</button>
       </div>
       <div class="strip" id="strip"></div>
       <div class="term grid" id="term" data-layout="1">
@@ -767,6 +783,34 @@
      A worktree needs a checkout on this machine, so this is the one place
      GitHub comes into it: fetch a repo you do not have yet, and it can then be
      worktreed like any other. The token never leaves the server process. -->
+<div class="modal-backdrop" id="bugBackdrop">
+  <div class="modal" role="dialog" aria-labelledby="bugTitle">
+    <div class="modal-title" id="bugTitle">Report a bug</div>
+    <div class="modal-msg">Tell us what went wrong. Every report is read, and fixes arrive in the next update.</div>
+    <div class="wt-field bug-field">
+      <label for="bugText">What happened?</label>
+      <textarea id="bugText" placeholder="I popped out a session and could not scroll up to read the answer..."></textarea>
+    </div>
+    <div class="wt-field bug-field">
+      <label for="bugExpected">What did you expect? (optional)</label>
+      <textarea id="bugExpected"></textarea>
+    </div>
+    <div class="wt-field">
+      <label for="bugContact">Name or email, if you want a reply (optional)</label>
+      <input type="text" id="bugContact" autocomplete="off" spellcheck="false">
+    </div>
+    <label class="bug-shot" id="bugShotRow"><input type="checkbox" id="bugShot">
+      <span>Include a screenshot of this window. Check it first: it shows whatever is on screen.</span>
+      <img id="bugShotImg" alt="Screenshot that will be sent"></label>
+    <div class="bug-note">Also sent: app and macOS version, and connection timings. Nothing typed or shown in your sessions.</div>
+    <div class="bug-err" id="bugErr"></div>
+    <div class="modal-actions">
+      <button class="btn-cancel" id="bugCancel">Cancel</button>
+      <button class="btn-go" id="bugSend">Send report</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="ghBackdrop">
   <div class="modal">
     <div class="modal-title">Clone from GitHub</div>
@@ -6139,6 +6183,101 @@
   }
 
   const kickPolls = () => pollers.forEach(p => p.kick());
+
+  // ── bug reports ─────────────────────────────────────────────────────────
+  // The button top right, in every window. A report goes to the engine
+  // (/api/bug/report, bugreport.py), which adds versions and timings and sends
+  // it to the bug desk on the VPS - or keeps it in an outbox until it can.
+  // The screenshot is taken BEFORE the form opens, so the form is not in it,
+  // and is only sent if the box is ticked, with the picture right there.
+  const bugEls = {
+    back: document.getElementById('bugBackdrop'), text: document.getElementById('bugText'),
+    expected: document.getElementById('bugExpected'), contact: document.getElementById('bugContact'),
+    shot: document.getElementById('bugShot'), shotRow: document.getElementById('bugShotRow'),
+    shotImg: document.getElementById('bugShotImg'), err: document.getElementById('bugErr'),
+    send: document.getElementById('bugSend'),
+  };
+  let bugShotData = null, bugShotWait = null;
+  window.__mtsSnapshot = data => { if (bugShotWait) { bugShotWait(data || null); bugShotWait = null; } };
+  function takeBugShot() {
+    if (!(window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.mts)) {
+      return Promise.resolve(null);
+    }
+    return new Promise(resolve => {
+      bugShotWait = resolve;
+      setTimeout(() => { if (bugShotWait === resolve) { bugShotWait = null; resolve(null); } }, 4000);
+      try { window.webkit.messageHandlers.mts.postMessage({ cmd: 'snapshot' }); }
+      catch { bugShotWait = null; resolve(null); }
+    });
+  }
+  function syncBugShot() {
+    bugEls.shotRow.classList.toggle('on', !!(bugEls.shot.checked && bugShotData));
+  }
+  async function openBugReport() {
+    if (bugEls.back.classList.contains('open')) return;
+    bugShotData = await takeBugShot();
+    bugEls.shotImg.src = bugShotData || '';
+    bugEls.shotRow.style.display = bugShotData ? '' : 'none';
+    bugEls.shot.checked = false;
+    syncBugShot();
+    bugEls.err.style.display = 'none';
+    bugEls.send.disabled = false;
+    bugEls.send.textContent = 'Send report';
+    bugEls.back.classList.add('open');
+    setTimeout(() => bugEls.text.focus(), 0);
+  }
+  function closeBugReport() {
+    bugEls.back.classList.remove('open');
+    bugShotData = null;
+    bugEls.shotImg.src = '';
+    const t = panes[activeSid];
+    if (t && t.term) setTimeout(() => { try { t.term.focus(); } catch {} }, 0);
+  }
+  async function sendBugReport() {
+    const text = bugEls.text.value.trim();
+    if (!text) {
+      bugEls.err.textContent = 'Say what happened first.';
+      bugEls.err.style.display = 'block';
+      bugEls.text.focus();
+      return;
+    }
+    bugEls.send.disabled = true;
+    bugEls.send.textContent = 'Sending...';
+    const body = {
+      text, expected: bugEls.expected.value.trim(), contact: bugEls.contact.value.trim(),
+      screenshot: (bugEls.shot.checked && bugShotData) || null,
+      meta: { page: soloSid ? 'solo' : 'main', focus: !!focusMode,
+              panes: streamSids().length, userAgent: navigator.userAgent,
+              window: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio },
+              diag: { stream: diag.stream, lagMax: Math.round(diag.lagMax) } },
+    };
+    let j = null;
+    try {
+      const r = await fetch('/api/bug/report', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      j = await r.json();
+    } catch {}
+    if (j && j.ok) {
+      bugEls.text.value = ''; bugEls.expected.value = '';
+      closeBugReport();
+      toast(j.queued ? 'Report saved. It goes as soon as the bug desk can be reached.'
+                     : 'Thanks - your report has been sent.');
+      return;
+    }
+    bugEls.send.disabled = false;
+    bugEls.send.textContent = 'Send report';
+    bugEls.err.textContent = (j && j.error) || 'Could not send the report. Try again in a moment.';
+    bugEls.err.style.display = 'block';
+  }
+  document.getElementById('btnBug').addEventListener('click', openBugReport);
+  document.getElementById('bugCancel').addEventListener('click', closeBugReport);
+  bugEls.send.addEventListener('click', sendBugReport);
+  bugEls.shot.addEventListener('change', syncBugShot);
+  bugEls.back.addEventListener('click', ev => { if (ev.target === bugEls.back) closeBugReport(); });
+  bugEls.back.addEventListener('keydown', ev => {
+    if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); closeBugReport(); }
+    else if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) { ev.preventDefault(); sendBugReport(); }
+  });
 
   function startApp() {
     if (appStarted) return;

@@ -58,6 +58,7 @@ cp ../terminal_worktree.py "$APP/Contents/Resources/terminal_worktree.py"
 cp ../setup.py "$APP/Contents/Resources/setup.py"
 cp ../lifeboat.py "$APP/Contents/Resources/lifeboat.py"
 cp ../updater.py "$APP/Contents/Resources/updater.py"
+cp ../bugreport.py "$APP/Contents/Resources/bugreport.py"
 cp ../VERSION "$APP/Contents/Resources/VERSION"
 rm -rf "$APP/Contents/Resources/static"
 cp -R ../static "$APP/Contents/Resources/static"
@@ -66,7 +67,7 @@ cp -R ../static "$APP/Contents/Resources/static"
 #     project but forgotten in the copy list above is otherwise a crash on first
 #     launch, and every step between here and there would have looked fine.
 echo "==> Verifying the bundled engine imports"
-if ! ( cd "$APP/Contents/Resources" && python3 -c "import terminal_worktree, terminal_manager, setup, updater" ); then
+if ! ( cd "$APP/Contents/Resources" && python3 -c "import terminal_worktree, terminal_manager, setup, updater, bugreport" ); then
     echo "!! the bundled engine does not import - a module is missing from the copy list above" >&2
     exit 1
 fi

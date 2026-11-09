@@ -1,0 +1,18 @@
+[Unit]
+Description=Mattdaemon bug desk (write-only bug report intake, :8724)
+After=network.target
+
+[Service]
+User=aihub
+Group=aihub
+ExecStart=/usr/bin/python3 /home/aihub/mattdaemon-bugdesk/bug_server.py --port 8724 --dir /home/aihub/mattdaemon-bugs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/aihub/mattdaemon-bugs
+PrivateTmp=true
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

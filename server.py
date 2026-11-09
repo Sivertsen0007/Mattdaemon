@@ -71,6 +71,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 import setup  # noqa: E402  (must follow the sys.path line above)
 import updater  # noqa: E402
+import bugreport  # noqa: E402
 
 # Content types for the handful of things we serve out of static/.
 _CONTENT_TYPES = {
@@ -2045,6 +2046,11 @@ class TerminalHandler(BaseHTTPRequestHandler):
         if path == "/api/update/ack":
             self._json(200, updater.ack_updated())
             return
+        # A bug report works before setup too: a broken first run is exactly
+        # the kind of thing worth hearing about.
+        if path == "/api/bug/report":
+            self._json(200, bugreport.submit(data, _bug_session_counts()))
+            return
 
         if path == "/api/setup/folder":
             self._json(200, setup_save_folder(data.get("path", "")))
@@ -3096,6 +3102,17 @@ def _run_needs_dump():
     return 0
 
 
+def _bug_session_counts():
+    """How many sessions, nothing about them - names and folders stay here."""
+    out = {"vps": bool(_vps_enabled())}
+    try:
+        tm = _import_manager()
+        out["local"] = len(tm.list_sessions()) if tm else None
+    except Exception:
+        out["local"] = None
+    return out
+
+
 def main():
     parser = argparse.ArgumentParser(description="Standalone local terminal server")
     parser.add_argument("--port", type=int, default=8722)
@@ -3161,6 +3178,7 @@ def main():
     _import_manager()
     _start_vps_poller()
     _start_lifeboat()
+    bugreport.start_background_flush()
 
     if setup.is_complete():
         print(f"Working directory: {os.environ['TERMINAL_HOME']}")

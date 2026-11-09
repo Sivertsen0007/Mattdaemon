@@ -207,9 +207,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKUIDelegate, WKScript
             message.webView?.evaluateJavaScript(
                 "window.__mtsCopied && window.__mtsCopied(\(ok))",
                 completionHandler: nil)
+        case "snapshot":
+            // A picture of this window for a bug report. Taken when the page
+            // asks, BEFORE it opens the report form, so the form is not in it.
+            // The page shows it to the user, who decides whether it is sent.
+            guard let wv = message.webView else { return }
+            wv.takeSnapshot(with: WKSnapshotConfiguration()) { image, _ in
+                var arg = "null"
+                if let image = image, let png = AppDelegate.pngForReport(image) {
+                    arg = "'data:image/png;base64,\(png.base64EncodedString())'"
+                }
+                wv.evaluateJavaScript("window.__mtsSnapshot && window.__mtsSnapshot(\(arg))",
+                                      completionHandler: nil)
+            }
         default:
             NSLog("Ignoring unknown bridge command: \(cmd)")
         }
+    }
+
+    /// A PNG no wider than 1600 pixels: sharp enough to read, small enough to
+    /// send (a Retina window at full size is several megabytes).
+    static func pngForReport(_ image: NSImage) -> Data? {
+        let size = image.size
+        guard size.width > 0, size.height > 0 else { return nil }
+        let scale = min(1.0, 1600.0 / size.width)
+        let w = Int(size.width * scale), h = Int(size.height * scale)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: w, pixelsHigh: h,
+                                         bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                         isPlanar: false, colorSpaceName: .deviceRGB,
+                                         bytesPerRow: 0, bitsPerPixel: 0) else { return nil }
+        rep.size = NSSize(width: w, height: h)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        image.draw(in: NSRect(x: 0, y: 0, width: w, height: h))
+        NSGraphicsContext.restoreGraphicsState()
+        return rep.representation(using: .png, properties: [:])
     }
 
     /// Put text on the system pasteboard and report whether it is actually
