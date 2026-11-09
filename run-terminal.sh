@@ -74,11 +74,7 @@ if [[ "$ready" -ne 1 ]]; then
 fi
 
 echo "==> Opening $URL"
-if grep -qi microsoft /proc/version 2>/dev/null && command -v cmd.exe >/dev/null 2>&1; then
-    # Windows (WSL): open it in the Windows browser. WSL forwards localhost,
-    # so 127.0.0.1 there reaches this server.
-    cmd.exe /c start "" "$URL" >/dev/null 2>&1 || echo "   browse to $URL yourself"
-elif command -v open >/dev/null 2>&1; then
+if command -v open >/dev/null 2>&1; then
     open "$URL"
 elif command -v xdg-open >/dev/null 2>&1; then
     xdg-open "$URL"

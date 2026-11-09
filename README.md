@@ -8,7 +8,7 @@ A small, self-contained Mac app with tmux-backed terminal sessions that survive
 closing the window - so you can come back to whatever Claude was doing. Served on
 loopback only. Carries nobody's account.
 
-![platform](https://img.shields.io/badge/platform-macOS%2013%2B%20%C2%B7%20Windows%20(WSL%2C%20beta)-111827)
+![platform](https://img.shields.io/badge/platform-macOS%2013%2B-111827)
 ![engine](https://img.shields.io/badge/engine-Python%203%20%2B%20tmux-3776AB)
 ![shell](https://img.shields.io/badge/app-Swift%20%2F%20WKWebView-F05138)
 ![network](https://img.shields.io/badge/binds-127.0.0.1%20only-16a34a)
@@ -32,7 +32,7 @@ loopback only. Carries nobody's account.
 
 ## Install
 
-Pick your machine and paste the blocks into a terminal, one at a time.
+Mattdaemon is a Mac app. Paste the blocks into Terminal, one at a time.
 
 ### Mac (Apple Silicon, macOS 13+)
 
@@ -84,53 +84,6 @@ bash ../hooks/install.sh
 A copy you built yourself is signed with your own certificate, so it cannot verify
 releases. Update it with `git pull` and `./build.sh --install` again.
 
-### Windows 10/11 (through WSL)
-
-There is no Windows app. Mattdaemon's engine needs tmux, which only exists on
-Mac and Linux, so on Windows it runs inside WSL (Microsoft's built-in Linux) and
-you use it in your normal Windows browser. Same terminal and the same sessions
-that survive closing the window. What you do not get: the Dock badge, the native
-folder picker, pop-outs as real app windows, and self-updating.
-
-Status: the engine and its tests pass on Ubuntu 24.04 Linux. It has not yet been
-tried on a real Windows PC, so treat it as a beta.
-
-In **PowerShell, run as administrator**:
-
-```powershell
-wsl --install -d Ubuntu
-```
-
-Restart the PC when it asks, then open **Ubuntu** from the Start menu. It asks you
-to pick a Linux username and password. In that Ubuntu window:
-
-```sh
-# 1. What Mattdaemon drives
-sudo apt update && sudo apt install -y tmux python3 git curl
-curl -fsSL https://claude.ai/install.sh | bash
-```
-
-```sh
-# 2. Mattdaemon itself, plus the status-dot hooks
-git clone https://github.com/Sivertsen0007/Mattdaemon.git ~/Mattdaemon
-bash ~/Mattdaemon/hooks/install.sh
-```
-
-```sh
-# 3. Start it. It opens in your Windows browser at http://127.0.0.1:8722
-~/Mattdaemon/run-terminal.sh
-```
-
-Keep that Ubuntu window open while you use it. `Ctrl-C` stops the server, and your
-sessions keep running in tmux until you start it again. To update:
-
-```sh
-git -C ~/Mattdaemon pull
-```
-
-Keep your projects inside Ubuntu (for example `~/projects`), not under `/mnt/c/`.
-Windows drives work from WSL, but they are much slower for Claude Code.
-
 ### Updates
 
 A Mac copy installed from a release keeps itself up to date. A few seconds after
@@ -143,8 +96,8 @@ app and starts it again. Your sessions keep running through it, because they liv
 in tmux, not in the app. If the swap fails, the old app is put back. Settings >
 This install shows your version and has **Check for updates**.
 
-A copy built from source (your own Mac build, or Windows/WSL) still shows the
-box, but tells you to update with `git pull` instead.
+A copy built from source still shows the box, but tells you to update with
+`git pull` instead.
 
 ### Cutting a release
 
