@@ -1236,37 +1236,72 @@
     container.addEventListener('mouseup', copyOnRelease, true);
     document.addEventListener('mouseup', copyOnRelease, true);
 
-    // A scroll must never become a keystroke. An application that turns mouse
-    // reporting on - Claude Code does - is handed the wheel and scrolls itself.
-    // Codex does NOT, so xterm handles the wheel, and when the pane has nothing
-    // above the viewport yet xterm's fallback turns every wheel notch into a
-    // cursor key and SENDS it to the shell. In Codex that walks the composer
-    // back through your old prompts: you scroll up to re-read the conversation
-    // and instead a message from three days ago lands in the box you were
-    // typing in, on top of your draft. It reads as "scrolling brings up old
-    // messages", and no amount of scrolling ever shows the conversation.
+    // Scrolling a pane scrolls TMUX, because that is the only place the
+    // conversation is kept. tmux repaints a fixed window rather than pushing
+    // lines past its top, so nothing a session prints ever reaches the browser
+    // terminal's own scrollback - there is no xterm history here to move
+    // through, however long the session has been running. Its history lives in
+    // tmux (`history-limit`, 50000) and copy-mode is how you read it: that is
+    // what /api/terminal/scroll drives.
     //
-    // So: a wheel event over a pane that cannot scroll is swallowed here, before
-    // xterm can see it. Once the session has produced enough output to have a
-    // scrollback, the viewport scrolls and the event goes through untouched.
-    // Capture phase, like the copy handlers above, because xterm cancels what it
-    // takes; passive:false because a swallow means preventDefault.
+    // Letting the wheel reach anything else is what made scrolling useless, by
+    // two different routes:
+    //
+    //  - Claude Code turns mouse reporting on, because it wants clicks, so xterm
+    //    handed it the wheel - and there the notches walk the composer back
+    //    through old prompts. You scroll up to re-read the conversation and a
+    //    prompt from a previous session lands in the box you were typing in. It
+    //    reads as "scrolling brings up old messages", and no amount of
+    //    scrolling ever shows the conversation.
+    //  - With nothing asking for mouse events, xterm handles the wheel itself,
+    //    and with no scrollback to move it turns every notch into a cursor key
+    //    and sends THAT to the shell - the same damage by another road.
+    //
+    // So the wheel goes to tmux and nowhere else. Capture phase, because xterm
+    // cancels what it takes; passive:false because this always preventDefaults.
+    const paneRowHeight = () => {
+      const vp = container.querySelector('.xterm-viewport');
+      const h = (vp && vp.clientHeight) || container.clientHeight || 0;
+      return Math.max(4, h / Math.max(1, term.rows || 1));
+    };
+
+    // Notches are accumulated in pixels and flushed as whole lines, so a
+    // trackpad's burst of tiny deltas becomes one request instead of thirty,
+    // and a slow drag still moves: the sub-line remainder is kept, not dropped.
+    let wheelPx = 0, wheelTimer = null;
+    function flushWheel() {
+      wheelTimer = null;
+      const rowH = paneRowHeight();
+      const lines = Math.trunc(wheelPx / rowH);
+      if (!lines) return;
+      wheelPx -= lines * rowH;
+      fetch('/api/terminal/scroll', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sid, lines })
+      }).catch(() => {});
+    }
+
     container.addEventListener('wheel', ev => {
       try {
-        // The application asked for mouse events - they are its business, not ours.
-        if (term.modes && term.modes.mouseTrackingMode !== 'none') return;
         // On the ALTERNATE screen a full-screen app owns the view - Codex's
-        // transcript (Ctrl+T), less, vim - and the very same cursor-key fallback
-        // is how you scroll them: Codex's transcript prints "↑/↓ to scroll" at
-        // the bottom of it. So there the wheel is exactly right, and passing it
-        // through is what makes scrolling a Codex conversation work at all.
+        // transcript (Ctrl+T), less, vim - and scrolling it is its own business:
+        // Codex's transcript prints "↑/↓ to scroll" at the bottom of
+        // itself. tmux's history holds nothing for that view anyway, since an
+        // alternate screen never scrolls into it.
         const buf = term.buffer && term.buffer.active;
         if (buf && buf.type === 'alternate') return;
       } catch {}
-      const vp = container.querySelector('.xterm-viewport');
-      if (vp && vp.scrollHeight - vp.clientHeight > 1) return;   // there is room to scroll
+
       ev.preventDefault();
       ev.stopPropagation();
+
+      // deltaMode: 0 = pixels (trackpads and most mice), 1 = lines, 2 = pages.
+      const rowH = paneRowHeight();
+      let dy = ev.deltaY;
+      if (ev.deltaMode === 1) dy *= rowH;
+      else if (ev.deltaMode === 2) dy *= rowH * Math.max(1, term.rows || 1);
+      wheelPx += dy;
+      if (!wheelTimer) wheelTimer = setTimeout(flushWheel, 40);
     }, { capture: true, passive: false });
 
     // ⌘C with a selection is Copy. Without one it is left alone, so ⌘C stays

@@ -1764,6 +1764,11 @@ def write_session(sid, data):
     view = _get_view(sid)
     if not view:
         return {"ok": False, "error": "session not found"}
+    # A pane the user scrolled up in is sitting in copy-mode, where keystrokes
+    # are copy-mode commands - typed text would vanish instead of reaching the
+    # shell. Any real input means the reading is over, so leave the mode first.
+    # Normally a dict lookup and nothing more: see _leave_copy_mode.
+    _leave_copy_mode(sid)
     with view.fd_lock:
         if view.master_fd is None or view._closing:
             return {"ok": False, "error": "session not running"}
@@ -1772,6 +1777,90 @@ def write_session(sid, data):
             return {"ok": True}
         except OSError as e:
             return {"ok": False, "error": str(e)}
+
+
+# --- scrolling a pane -------------------------------------------------------
+#
+# tmux owns the screen. Lines that scroll off a pane go into tmux's own history
+# (`history-limit`, TMUX_HISTORY above) and NEVER into the scrollback of the
+# terminal drawing it, because tmux repaints a fixed window instead of pushing
+# lines past its top. So the browser's xterm has no scrollback to move through,
+# however much a session has printed, and the only thing that can scroll a
+# conversation is tmux's copy-mode. That is what scroll_session does.
+#
+# Which panes are scrolled up is tracked here rather than asked of tmux
+# (`#{pane_in_mode}`), because the question has to be answered on every write to
+# decide whether to leave the mode first - and a subprocess per keystroke is not
+# a thing this does. The flag is only ever set by scroll_session, so the cost is
+# one tmux call per scroll gesture.
+_copy_mode = {}               # sid -> True while we have put the pane in copy-mode
+_copy_lock = threading.Lock()
+
+# One gesture's ceiling. A flung trackpad should ask for a screenful or two, not
+# walk the whole 50000-line history in a single request.
+SCROLL_MAX_LINES = 500
+
+
+def _leave_copy_mode(sid):
+    """Return a scrolled-up pane to the live view, if we put it in one."""
+    with _copy_lock:
+        if not _copy_mode.pop(sid, False):
+            return
+    # `-X cancel` against a pane that already left the mode by itself (copy-mode
+    # -e exits on reaching the bottom) just fails harmlessly, so this never has
+    # to find out which it was.
+    _tmux("send-keys", "-t", _sname(sid), "-X", "cancel")
+
+
+def scroll_session(sid, lines):
+    """Scroll a session's view through tmux's history. Negative lines is up.
+
+    Returns `copyMode`: whether the pane is now held in the history rather than
+    following the live output.
+    """
+    try:
+        n = int(lines)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "lines must be a number"}
+    if not n:
+        return {"ok": True, "copyMode": bool(_copy_mode.get(sid))}
+    if not _session_exists(sid):
+        return {"ok": False, "error": "session not found"}
+
+    n = max(-SCROLL_MAX_LINES, min(SCROLL_MAX_LINES, n))
+    sname = _sname(sid)
+
+    if n < 0:
+        with _copy_lock:
+            entering = not _copy_mode.get(sid, False)
+            _copy_mode[sid] = True
+        if entering:
+            # -e so the mode ends by itself the moment you scroll back down to
+            # the live output: catching up needs no keystroke and no Escape.
+            res = _tmux("copy-mode", "-e", "-t", sname)
+            if res.returncode != 0:
+                with _copy_lock:
+                    _copy_mode.pop(sid, None)
+                return {"ok": False,
+                        "error": (res.stderr or "").strip() or "copy-mode refused"}
+        res = _tmux("send-keys", "-t", sname, "-X", "-N", str(-n), "scroll-up")
+    else:
+        with _copy_lock:
+            if not _copy_mode.get(sid, False):
+                return {"ok": True, "copyMode": False}   # already live at the bottom
+        res = _tmux("send-keys", "-t", sname, "-X", "-N", str(n), "scroll-down")
+        if res.returncode != 0:
+            # The pane left the mode on its own - it reached the bottom - so the
+            # flag was stale rather than the scroll being wrong. Clearing it is
+            # the whole repair, and the caller is now live again.
+            with _copy_lock:
+                _copy_mode.pop(sid, None)
+            return {"ok": True, "copyMode": False}
+
+    if res.returncode != 0:
+        return {"ok": False,
+                "error": (res.stderr or "").strip() or "scroll refused"}
+    return {"ok": True, "copyMode": bool(_copy_mode.get(sid))}
 
 
 # A session has ONE tmux window shared by every browser viewing it, so it can

@@ -114,6 +114,7 @@ cd macapp
 ./make-signing-cert.sh    # once per Mac - see "File access, granted once"
 ./build.sh
 open build/Mattdaemon.app
+# or: ./build.sh --install   -> puts it in ~/Applications, restarting a running copy
 ```
 
 `build.sh` runs `swift build`, assembles `Mattdaemon.app`, bundles the Python engine
