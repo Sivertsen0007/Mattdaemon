@@ -119,4 +119,4 @@ if [[ -z "${GH_TOKEN:-}" ]]; then
 fi
 gh release create "v$NEW" "dist/$ASSET" -R "$REPO" \
     --title "Mattdaemon $NEW" --notes-file "$NOTES"
-echo "==> Published v$NEW. Installed copies will offer it within a few hours, or at their next start."
+echo "==> Published v$NEW. Installed copies offer it at their next start, or within a day."
