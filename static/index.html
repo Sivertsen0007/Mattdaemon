@@ -1359,6 +1359,11 @@
         // The clock for "typed, and when did it show": started by the first key
         // nothing has answered yet, stopped by this pane's next output.
         if (!typedAt[sid]) typedAt[sid] = performance.now();
+        // The echo watchdog's clock (see healSilentPanes). Mouse reports are
+        // left out: a click or a wheel notch at the top of the scrollback can
+        // fairly get no redraw, a typed key always gets one.
+        if (!/^\x1b\[(<|M)/.test(data) && !echoWaitSince[sid])
+          echoWaitSince[sid] = Date.now();
       }
       inputQueue.push(data);
       flushInput();
@@ -1454,8 +1459,9 @@
   // pane's output, so it is still exactly what the log needs to catch.
   const diag = { keys: 0, lagMax: 0,
                  echo: { local: [], vps: [] }, post: { local: [], vps: [] },
-                 stream: { stalls: 0, reconnects: 0, desyncs: 0, ended: 0 } };
+                 stream: { stalls: 0, reconnects: 0, desyncs: 0, ended: 0, noecho: 0 } };
   const typedAt = {};                       // sid -> first unanswered key (ms)
+  const echoWaitSince = {};                 // sid -> first unechoed typed key (epoch ms)
   const diagHost = sid => (sid || '').startsWith('vps:') ? 'vps' : 'local';
   function diagNote(arr, ms) { if (arr.length < 3000) arr.push(Math.round(ms)); }
   let lagTick = performance.now();
@@ -1471,7 +1477,7 @@
                    echo: diag.echo, post: diag.post, stream: diag.stream };
     diag.keys = 0; diag.lagMax = 0;
     diag.echo = { local: [], vps: [] }; diag.post = { local: [], vps: [] };
-    diag.stream = { stalls: 0, reconnects: 0, desyncs: 0, ended: 0 };
+    diag.stream = { stalls: 0, reconnects: 0, desyncs: 0, ended: 0, noecho: 0 };
     fetch('/api/diag/latency', { method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body) }).catch(() => {});
@@ -1614,6 +1620,7 @@
         if (ms < 120000) diagNote(diag.echo[diagHost(evt.sid)], ms);
         typedAt[evt.sid] = 0;
       }
+      echoWaitSince[evt.sid] = 0;
       reopenTries = 0;    // bytes are flowing; a later stall starts fresh
       return;
     }
@@ -4652,8 +4659,9 @@
       if (!a.main) AGENT_BADGE[a.name] = a.account;
       const b = document.createElement('button');
       b.dataset.agent = a.name;
-      // An extra account is a login on this Mac; the box has no such agent.
-      if (!a.main) b.dataset.macOnly = '1';
+      // An extra account is a login on this Mac; the box only has it when it
+      // is signed in there too (~/.claude-<id> on the box).
+      if (!a.main && !a.onVps) b.dataset.macOnly = '1';
       b.innerHTML = '<span class="k">&#9679;</span> ';
       b.appendChild(document.createTextNode('New ' + a.label + ' session'));
       items.appendChild(b);
@@ -4673,7 +4681,13 @@
   // here). Ticked rows come back with one click; nothing comes back unasked.
   const lifeboatEl = document.getElementById('lifeboat');
   let lifeboatSids = new Set();
-  let lifeboatKey = '';
+  let lifeboatKey = null;
+  // Sids you already restored or let go: the engine can list them for a beat
+  // after, and they must not bring the bar back.
+  const lifeboatDone = new Set();
+  // Restored sids not yet seen in the session list (id -> deadline). Until they
+  // show up they are not gone, so they keep their folder and place in the list.
+  const lifeboatPending = new Map();
 
   async function refreshLifeboat() {
     let j;
@@ -4683,7 +4697,8 @@
       ['local', j.local || [], 'lost when this Mac shut down'],
       ['vps', j.vps || [], 'lost when the VPS restarted'],
       ['down', j.vps_down || [], 'on the VPS, which is down - continue them on this Mac'],
-    ].filter(g => g[1].length);
+    ].map(g => [g[0], g[1].filter(e => !lifeboatDone.has(e.sid)), g[2]])
+     .filter(g => g[1].length);
     lifeboatSids = new Set(groups.flatMap(g => g[1].map(e => e.sid)));
     const key = [...lifeboatSids].sort().join(',');
     if (key === lifeboatKey) return;          // unchanged: keep the ticks you set
@@ -4726,19 +4741,35 @@
     const go = document.createElement('button');
     go.className = 'go';
     go.textContent = 'Restore';
-    go.addEventListener('click', () => lifeboatAct('restore'));
+    go.addEventListener('click', () => lifeboatAsk('restore'));
     const no = document.createElement('button');
     no.textContent = 'Dismiss';
     no.title = 'Let the ticked sessions go for good';
-    no.addEventListener('click', () => lifeboatAct('dismiss'));
+    no.addEventListener('click', () => lifeboatAsk('dismiss'));
     acts.append(go, no);
     lifeboatEl.appendChild(acts);
   }
 
-  async function lifeboatAct(what) {
+  function lifeboatAsk(what) {
     const sids = [...lifeboatEl.querySelectorAll('input[type=checkbox]:checked')]
       .map(cb => cb.dataset.sid);
     if (!sids.length) { toast('Tick at least one session'); return; }
+    const n = sids.length + (sids.length === 1 ? ' session' : ' sessions');
+    if (what === 'restore')
+      askConfirm('Restore ' + n + '?', 'The ticked sessions come back where they were.',
+        'Restore', () => lifeboatAct(what, sids));
+    else
+      askConfirm('Let ' + n + ' go?', 'The ticked sessions are dropped for good. This cannot be undone.',
+        'Dismiss', () => lifeboatAct(what, sids));
+  }
+
+  function closeLifeboat() {
+    lifeboatEl.classList.remove('open');
+    lifeboatEl.innerHTML = '';
+    lifeboatKey = null;                       // next poll re-renders if anything is left
+  }
+
+  async function lifeboatAct(what, sids) {
     let j = {};
     try {
       j = await (await fetch('/api/terminal/lifeboat/' + what, {
@@ -4762,7 +4793,14 @@
         ? 'Restored ' + n + ', ' + j.failed.length + ' failed: ' + (j.failed[0].error || '')
         : 'Restored ' + n + (n === 1 ? ' session' : ' sessions'));
     else toast('Let ' + sids.length + ' go');
-    lifeboatKey = '';
+    const failed = new Set((j.failed || []).map(f => f.sid));
+    for (const sid of sids) if (!failed.has(sid)) lifeboatDone.add(sid);
+    if (what === 'restore') {
+      const until = Date.now() + 60000;
+      for (const sid of sids) if (!failed.has(sid)) lifeboatPending.set(sid, until);
+      for (const to of Object.values(j.moved || {})) lifeboatPending.set(to, until);
+    }
+    closeLifeboat();
     await refreshLifeboat();
     refreshSessions();
   }
@@ -4784,8 +4822,11 @@
     // A session the lifeboat is holding is not gone - it is waiting to come
     // back under the same id, into the same folder and place in the list.
     if (!booted) await refreshLifeboat();
+    for (const [id, until] of lifeboatPending)
+      if (live.has(id) || Date.now() > until) lifeboatPending.delete(id);
     const settled = id => (id.startsWith('vps:') ? vpsInfo.online : true)
-                          && !live.has(id) && !lifeboatSids.has(id);
+                          && !live.has(id) && !lifeboatSids.has(id)
+                          && !lifeboatPending.has(id);
 
     for (const id in panes) if (settled(id)) destroyPane(id);
 
@@ -4920,7 +4961,7 @@
     if (agentMenu.classList.contains('open')) { closeAgentMenu(); return; }
     agentMenuHost = host === 'vps' ? 'vps' : 'local';
     agentWhereEl.textContent = agentMenuHost === 'vps' ? 'on the VPS' : 'on this Mac';
-    // The DT account is a login on this Mac; the box has no such agent.
+    // An account that is only signed in on this Mac is hidden for the box.
     agentMenu.querySelectorAll('button[data-mac-only]').forEach(b => {
       b.style.display = agentMenuHost === 'vps' ? 'none' : '';
     });
@@ -5162,6 +5203,41 @@
   // Backstop for stalls with no wake event behind them (server restart, box
   // dropping the relay, a socket that just rots).
   setInterval(() => reviveStreams(STALL_MS), 5000);
+
+  // ── echo watchdog: one pane gone deaf while the stream stays healthy ──────
+  // The stream's liveness clock (lastRx) is shared by every pane, and pings
+  // keep it fresh. So when ONE pane's output stops while its input still works
+  // - a vps: relay whose box-side view died under live pings, a local view
+  // that stopped broadcasting - nothing above ever fires: the keys reach the
+  // shell, the screen never shows them, and scrolling Claude Code (wheel ->
+  // mouse report -> redraw) looks dead too. The latency log shows exactly that:
+  // minutes of POSTs answered in ~150ms with not one echo, cured only by
+  // quitting the app, because quitting re-attaches every pane.
+  //
+  // This is that re-attach without the quit. A typed key with no output from
+  // its pane for ECHO_STALL_MS, on a stream that is otherwise up, re-opens the
+  // stream; the server replays each pane's screen on attach. Rate-limited, so
+  // a prompt that really does not echo (a sudo password) costs at most one
+  // repaint every ECHO_HEAL_GAP_MS, never a loop.
+  const ECHO_STALL_MS = 5000;
+  const ECHO_HEAL_GAP_MS = 30000;
+  let lastEchoHeal = 0;
+  function healSilentPanes() {
+    if (!stream.connected || document.hidden) return;
+    const now = Date.now();
+    if (now - lastEchoHeal < ECHO_HEAL_GAP_MS) return;
+    const deaf = stream.sids.filter(sid => {
+      const t = echoWaitSince[sid];
+      return t && now - t > ECHO_STALL_MS && now - t < 120000;
+    });
+    if (!deaf.length) return;
+    lastEchoHeal = now;
+    for (const sid of deaf) echoWaitSince[sid] = 0;
+    diag.stream.noecho = (diag.stream.noecho || 0) + 1;
+    stream.retries = 0;
+    openStream(streamSids());
+  }
+  setInterval(healSilentPanes, 1000);
 
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) return;
