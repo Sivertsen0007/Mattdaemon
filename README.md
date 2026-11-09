@@ -113,6 +113,24 @@ creates the GitHub Release. It refuses to publish a build that is not signed wit
 that certificate, because every installed copy would refuse it. The notes are
 what people read in the update box, so write them for users.
 
+### Bug reports
+
+**Report bug**, top right in every window (pop-outs too), sends what the user
+writes, plus the app and macOS version and connection timings. If they tick the
+box, it also sends a screenshot, which they see before it goes. Nothing from a
+session is added. Reports go to the bug desk at
+`https://hub.mlmediahub.com/mattdaemon/bugs` (`bugdesk/bug_server.py`, service
+`mattdaemon-bugs` on the VPS). The desk only accepts reports and never hands
+them back, and it limits each sender to 10 an hour. If the desk is out of reach,
+a report waits in the app's outbox and goes later.
+
+Once a month, pull them down and read the new ones:
+
+```sh
+bugdesk/pull.sh          # copies into ~/Documents/Mattdaemon-bugs, lists what is new
+bugdesk/pull.sh --all    # lists every report
+```
+
 ---
 
 ## What it is
