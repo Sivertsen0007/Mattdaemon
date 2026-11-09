@@ -41,7 +41,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 REPO = "Sivertsen0007/Mattdaemon"
 ASSET_NAME = "Mattdaemon-macOS-arm64.zip"
-CHECK_TTL = 6 * 3600          # a background check at most this often
+CHECK_TTL = 24 * 3600         # a background check at most once a day
 HTTP_TIMEOUT = 15
 
 
@@ -198,7 +198,7 @@ def _cannot_install_reason():
     """Why this copy cannot update itself, or None if it can."""
     app = app_bundle_path()
     if not app:
-        return "running from source - pull and rebuild instead"
+        return "running from source - update with git pull"
     if not os.access(os.path.dirname(app), os.W_OK):
         return "no permission to replace %s" % app
     req = _designated_requirement(app)
@@ -292,7 +292,8 @@ def verify_bundle(new_app, current_app, expect_version=None):
     r = subprocess.run(["codesign", "--verify", "--deep", "--strict",
                         "-R=" + req, new_app], capture_output=True, text=True)
     if r.returncode != 0:
-        return "the download is not signed by the same certificate as this copy"
+        return ("the download is not signed by the same certificate as this copy"
+                " - a copy you built yourself updates with git pull and ./build.sh --install")
     return None
 
 

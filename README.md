@@ -8,7 +8,7 @@ A small, self-contained Mac app with tmux-backed terminal sessions that survive
 closing the window - so you can come back to whatever Claude was doing. Served on
 loopback only. Carries nobody's account.
 
-![platform](https://img.shields.io/badge/platform-macOS%2013%2B-111827)
+![platform](https://img.shields.io/badge/platform-macOS%2013%2B%20%C2%B7%20Windows%20(WSL%2C%20beta)-111827)
 ![engine](https://img.shields.io/badge/engine-Python%203%20%2B%20tmux-3776AB)
 ![shell](https://img.shields.io/badge/app-Swift%20%2F%20WKWebView-F05138)
 ![network](https://img.shields.io/badge/binds-127.0.0.1%20only-16a34a)
@@ -22,7 +22,7 @@ loopback only. Carries nobody's account.
 
 | | |
 |---|---|
-| **Start here** | [Install](#install) · [What it is](#what-it-is) · [Two ways to run it](#two-ways-to-run-it) · [First run](#first-run) |
+| **Start here** | [Install](#install) · [Updates](#updates) · [What it is](#what-it-is) · [Two ways to run it](#two-ways-to-run-it) · [First run](#first-run) |
 | **How it works** | [Architecture](#architecture) · [The four pieces](#the-four-pieces) · [A keystroke's journey](#a-keystrokes-journey) · [Session state](#session-state-what-the-dots-mean) · [Status hooks](#the-hooks-that-make-the-dots-honest) |
 | **Features** | [The window](#the-window) · [Copy and paste](#copy-and-paste) · [Handover: Mac to VPS](#handover-mac-to-vps) · [Handover: VPS to Mac](#handover-vps-to-mac) · [Uploads](#uploads) |
 | **Operating it** | [File access, once](#file-access-granted-once-not-every-week) · [Configuration](#configuration) · [Give it to someone else](#give-it-to-someone-else) |
@@ -32,43 +32,124 @@ loopback only. Carries nobody's account.
 
 ## Install
 
-**Download (Apple Silicon Mac, macOS 13+):**
+Pick your machine and paste the blocks into a terminal, one at a time.
 
-1. Get `Mattdaemon-macOS-arm64.zip` from the
-   [latest release](https://github.com/Sivertsen0007/Mattdaemon/releases/latest) and unzip it.
-2. Drag `Mattdaemon.app` into `Applications`.
-3. It is not notarised by Apple, so macOS blocks the first launch. Either
-   right-click the app → **Open** → **Open**, or run once:
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/Mattdaemon.app
-   ```
-4. Install what it drives, if you have not already:
-   ```sh
-   xcode-select --install          # gives you python3
-   brew install tmux
-   npm install -g @anthropic-ai/claude-code
-   ```
-5. Open it. The setup card asks for your own Claude Code login and the folder your
-   sessions should start in. Nothing of anyone else's comes with the app.
+### Mac (Apple Silicon, macOS 13+)
 
-On an Intel Mac, or to build it yourself, see [Two ways to run it](#two-ways-to-run-it).
+```sh
+# 1. What Mattdaemon drives: python3, tmux and Claude Code
+xcode-select --install                     # python3 + git; skip if already installed
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"   # Homebrew; skip if you have it
+brew install tmux
+curl -fsSL https://claude.ai/install.sh | bash
+```
 
-**Updates.** A copy installed from a release keeps itself up to date. A few
-seconds after it starts, and every few hours after that, it asks GitHub for the
-latest release. When there is a newer one, a box in the corner shows the
-version and what is new, with **Update now**, **Later** and **Skip this
-version**. Update now downloads the zip, checks it against the SHA-256 GitHub
-publishes, checks it is signed by the same certificate as the copy you are
-running, then quits, swaps the app and starts it again. Your sessions keep
-running through it, because they live in tmux, not in the app. If the swap
-fails, the old app is put back. Settings > This install shows your version and
-has **Check for updates**.
+```sh
+# 2. The app itself, from the latest release, into ~/Applications
+mkdir -p ~/Applications
+curl -fL -o /tmp/Mattdaemon.zip \
+  https://github.com/Sivertsen0007/Mattdaemon/releases/latest/download/Mattdaemon-macOS-arm64.zip
+ditto -x -k /tmp/Mattdaemon.zip ~/Applications && rm /tmp/Mattdaemon.zip
+xattr -dr com.apple.quarantine ~/Applications/Mattdaemon.app   # not notarised by Apple
+```
 
-A copy you built and signed yourself cannot verify a release against its own
-certificate. It still shows the box, but with **Download** instead.
+```sh
+# 3. Optional but recommended: the hooks that make the status dots accurate
+git clone https://github.com/Sivertsen0007/Mattdaemon.git ~/Mattdaemon-src
+bash ~/Mattdaemon-src/hooks/install.sh
+```
 
-**Cutting a release** (on the Mac that holds the "Mattdaemon Local Signing"
-certificate, from a clean `main`):
+```sh
+# 4. Start it
+open ~/Applications/Mattdaemon.app
+```
+
+The setup card asks for your own Claude Code login and the folder your sessions
+should start in. Nothing of anyone else's comes with the app. From here on the app
+updates itself (see [Updates](#updates)).
+
+### Mac (Intel, or building it yourself)
+
+The release is Apple Silicon only. On an Intel Mac, or to run your own changes,
+build it (step 1 above first):
+
+```sh
+git clone https://github.com/Sivertsen0007/Mattdaemon.git ~/Mattdaemon-src
+cd ~/Mattdaemon-src/macapp
+./make-signing-cert.sh      # once per Mac, so macOS remembers its file access
+./build.sh --install        # builds, signs, puts it in ~/Applications and starts it
+bash ../hooks/install.sh
+```
+
+A copy you built yourself is signed with your own certificate, so it cannot verify
+releases. Update it with `git pull` and `./build.sh --install` again.
+
+### Windows 10/11 (through WSL)
+
+There is no Windows app. Mattdaemon's engine needs tmux, which only exists on
+Mac and Linux, so on Windows it runs inside WSL (Microsoft's built-in Linux) and
+you use it in your normal Windows browser. Same terminal and the same sessions
+that survive closing the window. What you do not get: the Dock badge, the native
+folder picker, pop-outs as real app windows, and self-updating.
+
+Status: the engine and its tests pass on Ubuntu 24.04 Linux. It has not yet been
+tried on a real Windows PC, so treat it as a beta.
+
+In **PowerShell, run as administrator**:
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+Restart the PC when it asks, then open **Ubuntu** from the Start menu. It asks you
+to pick a Linux username and password. In that Ubuntu window:
+
+```sh
+# 1. What Mattdaemon drives
+sudo apt update && sudo apt install -y tmux python3 git curl
+curl -fsSL https://claude.ai/install.sh | bash
+```
+
+```sh
+# 2. Mattdaemon itself, plus the status-dot hooks
+git clone https://github.com/Sivertsen0007/Mattdaemon.git ~/Mattdaemon
+bash ~/Mattdaemon/hooks/install.sh
+```
+
+```sh
+# 3. Start it. It opens in your Windows browser at http://127.0.0.1:8722
+~/Mattdaemon/run-terminal.sh
+```
+
+Keep that Ubuntu window open while you use it. `Ctrl-C` stops the server, and your
+sessions keep running in tmux until you start it again. To update:
+
+```sh
+git -C ~/Mattdaemon pull
+```
+
+Keep your projects inside Ubuntu (for example `~/projects`), not under `/mnt/c/`.
+Windows drives work from WSL, but they are much slower for Claude Code.
+
+### Updates
+
+A Mac copy installed from a release keeps itself up to date. A few seconds after
+it starts, and then once a day while it stays open, it asks GitHub for the latest
+release. When there is a newer one, a box in the corner shows the version and
+what is new, with **Update now**, **Later** and **Skip this version**. Update now
+downloads the zip, checks it against the SHA-256 GitHub publishes, checks it is
+signed by the same certificate as the copy you are running, then quits, swaps the
+app and starts it again. Your sessions keep running through it, because they live
+in tmux, not in the app. If the swap fails, the old app is put back. Settings >
+This install shows your version and has **Check for updates**.
+
+A copy built from source (your own Mac build, or Windows/WSL) still shows the
+box, but tells you to update with `git pull` instead.
+
+### Cutting a release
+
+On the Mac that holds the "Mattdaemon Local Signing" certificate, from a clean
+`main`:
 
 ```sh
 ./release.sh patch --notes notes.md     # or minor / major / 1.2.3, add --dry-run to try it

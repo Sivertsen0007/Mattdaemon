@@ -5364,7 +5364,9 @@
       updButton('Later', 'btn-ghost', () => { updDismissed = rel.version; closeUpdate(); });
     } else {
       updSetMsg("This copy can't update itself: " + (st.cannotInstall || 'unknown reason') + '.', true);
-      updButton('Download', 'btn-primary', () => openExternal(rel.page, 'Opened in your browser'));
+      // A source checkout (WSL, a dev clone) updates with git, not a download.
+      if (!/from source/.test(st.cannotInstall || ''))
+        updButton('Download', 'btn-primary', () => openExternal(rel.page, 'Opened in your browser'));
       updButton('Later', 'btn-ghost', () => { updDismissed = rel.version; closeUpdate(); });
     }
     updButton('Skip this version', 'linkish', async () => {
@@ -5447,12 +5449,12 @@
   }
 
   document.getElementById('setCheckUpdate').addEventListener('click', () => checkForUpdate(true));
-  // Shortly after start (the engine checks GitHub on the first ask), then a few
-  // times a day; the engine caches, so the timer costs nothing between checks.
+  // Shortly after start (the engine checks GitHub on the first ask), then once
+  // a day for a window that stays open; the engine caches for 24h as well.
   // Only the main window offers it; a popped-out session window stays quiet.
   if (!soloSid) {
     setTimeout(() => checkForUpdate(false), 4000);
-    setInterval(() => { if (!updEl.classList.contains('open')) checkForUpdate(false); }, 3 * 3600 * 1000);
+    setInterval(() => { if (!updEl.classList.contains('open')) checkForUpdate(false); }, 24 * 3600 * 1000);
   }
 
   // ── first run ────────────────────────────────────────────────────────────
