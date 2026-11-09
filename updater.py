@@ -142,12 +142,39 @@ _check_cache = {"at": 0.0, "release": None, "error": None}
 _job = {"phase": "idle", "progress": 0, "error": None, "version": None}
 
 
-def _http_get(url, timeout=HTTP_TIMEOUT):
+def _http_get(url, timeout=HTTP_TIMEOUT, accept="application/vnd.github+json"):
     req = urllib.request.Request(url, headers={
         "User-Agent": "Mattdaemon-updater",
-        "Accept": "application/vnd.github+json",
+        "Accept": accept,
     })
     return urllib.request.urlopen(req, timeout=timeout)
+
+
+def _open_download(rel, timeout=60, attempts=3, pause=2.0):
+    """Open the release zip. GitHub serves it two ways: the API asset route
+    (api.github.com) and the browser link (github.com). When one host has a
+    bad moment (a 504, a dropped connection) the other usually still works,
+    so try both, a few rounds, before giving up. 4xx answers other than 429
+    will not get better by asking again, so those stop at once."""
+    routes = []
+    if rel.get("api_url"):
+        routes.append((rel["api_url"], "application/octet-stream"))
+    if rel.get("url"):
+        routes.append((rel["url"], "application/octet-stream"))
+    last = None
+    for n in range(attempts):
+        for url, accept in routes:
+            try:
+                return _http_get(url, timeout=timeout, accept=accept)
+            except urllib.error.HTTPError as e:
+                last = e
+                if 400 <= e.code < 500 and e.code != 429:
+                    raise
+            except (urllib.error.URLError, OSError) as e:
+                last = e
+        if n + 1 < attempts:
+            time.sleep(pause * (n + 1))
+    raise last or RuntimeError("the release has no download link")
 
 
 def _fetch_latest():
@@ -187,6 +214,7 @@ def _fetch_latest():
         "version": version,
         "notes": (rel.get("body") or "").strip(),
         "url": zip_asset.get("browser_download_url"),
+        "api_url": zip_asset.get("url"),
         "size": int(zip_asset.get("size") or 0),
         "sha256": sha,
         "page": rel.get("html_url") or "https://github.com/%s/releases/latest" % REPO,
@@ -373,7 +401,7 @@ def _run_update(rel, app_pid):
         zpath = os.path.join(work, ASSET_NAME)
         h = hashlib.sha256()
         got = 0
-        with _http_get(rel["url"], timeout=60) as r, open(zpath, "wb") as f:
+        with _open_download(rel) as r, open(zpath, "wb") as f:
             total = rel.get("size") or int(r.headers.get("Content-Length") or 0)
             while True:
                 chunk = r.read(64 * 1024)

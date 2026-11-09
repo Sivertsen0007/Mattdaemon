@@ -100,6 +100,10 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        if self.path == "/down":
+            self.send_response(504)
+            self.end_headers()
+            return
         local = Feed.files.get(self.path)
         if not local:
             self.send_response(404)
@@ -113,12 +117,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
-def release(base, version, url_path, sha, size):
-    return {"tag_name": "v" + version, "draft": False, "prerelease": False,
+def release(base, version, url_path, sha, size, api_path=None):
+    rel = {"tag_name": "v" + version, "draft": False, "prerelease": False,
             "body": "- Test notes for %s" % version, "html_url": base + "/page",
             "published_at": "2026-11-09T00:00:00Z",
             "assets": [{"name": ASSET, "size": size, "digest": "sha256:" + sha,
                         "browser_download_url": base + url_path}]}
+    if api_path:
+        rel["assets"][0]["url"] = base + api_path
+    return rel
 
 
 def wait_job(up, timeout=60):
@@ -232,6 +239,23 @@ def main():
         r = up.apply_update(app_pid=1)
         check(not r["ok"], "and apply refuses for it")
         make_app(installed, cur, SIGN_ID)
+
+        print("\nGITHUB HAVING A BAD MOMENT")
+        reset()
+        Feed.release = release(base, newer, "/down", good_sha, size(good_zip), api_path="/good.zip")
+        up.status(force=True)
+        with up._open_download(up._check_cache["release"], pause=0) as r:
+            got = r.read()
+        check(hashlib.sha256(got).hexdigest() == good_sha,
+              "a 504 on the browser link falls back to the API route")
+        Feed.release = release(base, newer, "/down", good_sha, size(good_zip), api_path="/down")
+        up.status(force=True)
+        try:
+            up._open_download(up._check_cache["release"], pause=0)
+            check(False, "both routes down: the download reports the error")
+        except Exception as e:
+            check("504" in str(e), "both routes down: the download reports the error")
+        Feed.release = release(base, newer, "/good.zip", good_sha, size(good_zip))
 
         print("\nINSTALLING A GOOD RELEASE")
         reset()
